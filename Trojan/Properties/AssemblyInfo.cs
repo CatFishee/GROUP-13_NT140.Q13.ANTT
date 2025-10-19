@@ -5,11 +5,11 @@ using System.Runtime.InteropServices;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("Downloader Trojan")]
+[assembly: AssemblyTitle("Trojan")]
 [assembly: AssemblyDescription("")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("Downloader Trojan")]
+[assembly: AssemblyProduct("Trojan")]
 [assembly: AssemblyCopyright("Copyright ©  2025")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
@@ -20,7 +20,7 @@ using System.Runtime.InteropServices;
 [assembly: ComVisible(false)]
 
 // The following GUID is for the ID of the typelib if this project is exposed to COM
-[assembly: Guid("819862fe-1f24-45fc-9e99-83549cacf3f0")]
+[assembly: Guid("9ae5ad8f-fb76-4abc-954b-698e17b1cefa")]
 
 // Version information for an assembly consists of the following four values:
 //

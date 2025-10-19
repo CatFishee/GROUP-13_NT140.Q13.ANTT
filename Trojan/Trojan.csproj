@@ -4,10 +4,10 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{819862FE-1F24-45FC-9E99-83549CACF3F0}</ProjectGuid>
+    <ProjectGuid>{9AE5AD8F-FB76-4ABC-954B-698E17B1CEFA}</ProjectGuid>
     <OutputType>Exe</OutputType>
-    <RootNamespace>Malware</RootNamespace>
-    <AssemblyName>Malware</AssemblyName>
+    <RootNamespace>Trojan</RootNamespace>
+    <AssemblyName>Trojan</AssemblyName>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
