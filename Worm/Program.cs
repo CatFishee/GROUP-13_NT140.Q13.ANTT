@@ -125,14 +125,14 @@ class Program
         string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
         File.Copy(exePath, Path.Combine(tempFolder, Path.GetFileName(exePath)), overwrite: true);
 
-        string testFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "test");
-        if (Directory.Exists(testFolder))
+        string payloadFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "payload");
+        if (Directory.Exists(payloadFolder))
         {
-            CopyFolderSync(testFolder, Path.Combine(tempFolder, "test"));
+            CopyFolderSync(payloadFolder, Path.Combine(tempFolder, "payload"));
         }
         else
         {
-            Console.WriteLine("WARNING: 'test' folder not found, skipping copy.");
+            Console.WriteLine("WARNING: 'payload' folder not found, skipping copy.");
         }
 
         Console.WriteLine("Deployment package prepared successfully.");
