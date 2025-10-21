@@ -30,8 +30,6 @@ namespace LogicBomb
         static void Main(string[] args)
         {
             Console.WriteLine("[LogicBomb] START (Simplified Mode) - Press Ctrl+C to stop");
-
-            // ✅ Ensure result directory exists
             Directory.CreateDirectory(ResultDir);
             logFile = Path.Combine(ResultDir, "logicbomb_simplified_log.jsonl");
 

