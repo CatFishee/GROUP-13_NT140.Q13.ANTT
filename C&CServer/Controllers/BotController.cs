@@ -22,6 +22,11 @@ namespace CncServer.Controllers
         public string Hash { get; set; }
         public DateTime Timestamp { get; set; } = DateTime.UtcNow;
     }
+    public class LogRequest
+    {
+        public string BotId { get; set; }
+        public string Message { get; set; }
+    }
 
     [ApiController]
     [Route("bot")]
@@ -88,6 +93,22 @@ namespace CncServer.Controllers
         public IActionResult GetResults()
         {
             return Ok(_results.OrderByDescending(r => r.Timestamp));
+        }
+
+        [HttpPost("log")]
+        public IActionResult LogStatus([FromBody] LogRequest logRequest)
+        {
+            if (logRequest == null || string.IsNullOrEmpty(logRequest.BotId))
+            {
+                return BadRequest("Invalid log data.");
+            }
+
+            // In log ra console của SERVER với màu sắc để dễ phân biệt
+            Console.ForegroundColor = ConsoleColor.Gray;
+            Console.WriteLine($"[LOG from {logRequest.BotId.Substring(0, 8)}...]: {logRequest.Message}");
+            Console.ResetColor();
+
+            return Ok("Log received.");
         }
     }
 }
