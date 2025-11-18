@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 // Cấu hình để server lắng nghe trên cổng 8000
 builder.WebHost.UseUrls("http://*:8000");
 
+
 // Đăng ký các dịch vụ cần thiết
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

