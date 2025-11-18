@@ -54,6 +54,10 @@
       <Project>{e6bf7bca-8aaf-40db-80a0-cd5ce61b7a63}</Project>
       <Name>LogicBomb</Name>
     </ProjectReference>
+    <ProjectReference Include="..\SharedCrypto\SharedCrypto.csproj">
+      <Project>{9d4b3956-b9d5-4ece-ac00-4abd5e7a922d}</Project>
+      <Name>SharedCrypto</Name>
+    </ProjectReference>
     <ProjectReference Include="..\Trojan\Trojan.csproj">
       <Project>{9ae5ad8f-fb76-4abc-954b-698e17b1cefa}</Project>
       <Name>Trojan</Name>
