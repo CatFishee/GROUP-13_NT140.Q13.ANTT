@@ -74,5 +74,11 @@
     <None Include="app.manifest" />
     <None Include="packages.config" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SharedCrypto\SharedCrypto.csproj">
+      <Project>{9d4b3956-b9d5-4ece-ac00-4abd5e7a922d}</Project>
+      <Name>SharedCrypto</Name>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
