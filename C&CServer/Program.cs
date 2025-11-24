@@ -4,6 +4,11 @@
 
 var builder = WebApplication.CreateBuilder(args);
 
+// --- ADDED: Force the application to use its own directory as the base path ---
+// This ensures it always finds the 'wwwroot' folder next to the .exe
+builder.Host.UseContentRoot(AppContext.BaseDirectory);
+
+
 // Cấu hình để server lắng nghe trên cổng 8000
 builder.WebHost.UseUrls("http://*:8000");
 
