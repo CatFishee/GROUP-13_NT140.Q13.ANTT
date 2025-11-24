@@ -32,8 +32,8 @@ class Program
     private const int MAX_CONCURRENT_SCANS = 50;
     private const int SCAN_INTERVAL_MINUTES = 10;
 
-    private const string WORM_TASK_NAME = "MaliciousWorm_Persistence";
-    private const string LOGICBOMB_TASK_NAME = "MaliciousLogicBomb_Monitor";
+    private const string WORM_TASK_NAME = "Malicious_Worm";
+    private const string LOGICBOMB_TASK_NAME = "Malicious_LogicBomb";
 
     private static string logFilePath;
 
@@ -46,7 +46,11 @@ class Program
         Console.WriteLine();
 
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        logFilePath = Path.Combine(baseDir, "worm_activity.log");
+
+        // Create a timestamp for the unique log file name
+        string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
+        string logFileName = $"Worm_log_{timestamp}.txt";
+        logFilePath = Path.Combine(baseDir, logFileName);
 
         LogToFile("========================================");
         LogToFile($"Worm started at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
