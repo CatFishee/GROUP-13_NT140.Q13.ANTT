@@ -5,7 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Management;
 using System.Net.NetworkInformation;
-using System.Net.Sockets; // This namespace is needed for the Socket class
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -422,18 +422,13 @@ class Program
         await Task.WhenAll(files.Concat(dirs));
     }
 
-    // --- FIXED: Corrected GetLocalIPAddress method ---
     private static string GetLocalIPAddress()
     {
         try
         {
-            // Use a 'using' statement to ensure the socket is properly disposed of.
             using (Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, 0))
             {
-                // First, connect the socket. This method returns void.
                 socket.Connect("8.8.8.8", 65530);
-
-                // Now that it's connected, get the endpoint from the original socket object.
                 return socket.LocalEndPoint.ToString().Split(':')[0];
             }
         }
@@ -485,9 +480,28 @@ class Program
         public string lpLocalName; public string lpRemoteName; public string lpComment; public string lpProvider;
     }
 
+    // --- MODIFIED: Central logging method updated with descriptive prefixes ---
     private static void Log(string message, ConsoleColor color)
     {
-        string logMessage = $"[{color.ToString().ToUpper()}] {message}";
+        string prefix;
+        switch (color)
+        {
+            case ConsoleColor.Green:
+                prefix = "[SUCCESS]";
+                break;
+            case ConsoleColor.Yellow:
+                prefix = "[WARNING]";
+                break;
+            case ConsoleColor.Red:
+                prefix = "[ERROR]";
+                break;
+            case ConsoleColor.Cyan:
+            default:
+                prefix = "[INFO]";
+                break;
+        }
+
+        string logMessage = $"{prefix} {message}";
         Console.ForegroundColor = color;
         Console.WriteLine(logMessage);
         Console.ResetColor();
