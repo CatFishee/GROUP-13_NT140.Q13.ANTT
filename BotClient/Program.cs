@@ -119,8 +119,8 @@ public class Bot
                 Console.ResetColor();
             }
 
-            int jitterMilliseconds = _random.Next(15000, 30001);
-            Console.WriteLine($"Waiting for {jitterMilliseconds / 1000}s...");
+            int jitterMilliseconds = _random.Next(3000, 5001);
+            //Console.WriteLine($"Waiting for {jitterMilliseconds / 1000}s...");
             await Task.Delay(jitterMilliseconds);
         }
     }
@@ -320,7 +320,7 @@ public class Bot
                 break;
 
             case BotCommands.Recon: // <=== THÊM MỚI CASE NÀY
-                if (currentStatus == BotCommands.Recon || currentStatus == BotCommands.ReconDone)
+                if (currentStatus == BotCommands.Recon)
                 {
                     // Do nothing (tránh spam)
                     return;
@@ -828,7 +828,7 @@ public class Bot
                                 byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(dataToHash));
 
                                 // Giả lập tìm hash (Độ khó thấp để test)
-                                if (bytes[0] == 0 && bytes[1] == 0 && bytes[2] == 0)
+                                if (bytes[0] == 0 && bytes[1] == 0)
                                 {
                                     string hashString = BitConverter.ToString(bytes).Replace("-", "").ToLower();
                                     // Fire and forget log để không chặn luồng đào
