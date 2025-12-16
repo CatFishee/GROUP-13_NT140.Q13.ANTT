@@ -50,11 +50,11 @@ class Program
         string debugLog = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "DECOY_DEBUG.txt");
         try
         {
-            File.AppendAllText(debugLog, $"\n=== {DateTime.Now:HH:mm:ss} ===\n");
-            File.AppendAllText(debugLog, $"Machine: {Environment.MachineName}\n");
-            File.AppendAllText(debugLog, $"User: {Environment.UserName}\n");
-            File.AppendAllText(debugLog, $"Args.Length: {args.Length}\n");
-            File.AppendAllText(debugLog, $"Args: [{string.Join(", ", args)}]\n");
+            System.IO.File.AppendAllText(debugLog, $"\n=== {DateTime.Now:HH:mm:ss} ===\n");
+            System.IO.File.AppendAllText(debugLog, $"Machine: {Environment.MachineName}\n");
+            System.IO.File.AppendAllText(debugLog, $"User: {Environment.UserName}\n");
+            System.IO.File.AppendAllText(debugLog, $"Args.Length: {args.Length}\n");
+            System.IO.File.AppendAllText(debugLog, $"Args: [{string.Join(", ", args)}]\n");
         }
         catch { }
 
@@ -64,10 +64,10 @@ class Program
         {
             string targetDoc = args[0];
 
-            try { File.AppendAllText(debugLog, $"Target Doc: {targetDoc}\n"); } catch { }
+            try { System.IO.File.AppendAllText(debugLog, $"Target Doc: {targetDoc}\n"); } catch { }
 
             bool fileExists = System.IO.File.Exists(targetDoc);
-            try { File.AppendAllText(debugLog, $"File Exists: {fileExists}\n"); } catch { }
+            try { System.IO.File.AppendAllText(debugLog, $"File Exists: {fileExists}\n"); } catch { }
 
             if (fileExists)
             {
@@ -77,7 +77,7 @@ class Program
                     var psi = new ProcessStartInfo(targetDoc) { UseShellExecute = true };
                     Process.Start(psi);
 
-                    try { File.AppendAllText(debugLog, $"SUCCESS: Document opened\n"); } catch { }
+                    try { System.IO.File.AppendAllText(debugLog, $"SUCCESS: Document opened\n"); } catch { }
                 }
                 catch (Exception ex)
                 {
@@ -85,20 +85,20 @@ class Program
                     // Only log for educational debugging
                     try
                     {
-                        File.AppendAllText(debugLog, $"FAILED: {ex.Message}\n");
-                        File.AppendAllText(debugLog, $"Stack: {ex.StackTrace}\n");
+                        System.IO.File.AppendAllText(debugLog, $"FAILED: {ex.Message}\n");
+                        System.IO.File.AppendAllText(debugLog, $"Stack: {ex.StackTrace}\n");
                     }
                     catch { /* Even logging failed - just continue */ }
                 }
             }
             else
             {
-                try { File.AppendAllText(debugLog, $"SKIPPED: File does not exist\n"); } catch { }
+                try { System.IO.File.AppendAllText(debugLog, $"SKIPPED: File does not exist\n"); } catch { }
             }
         }
         else
         {
-            try { File.AppendAllText(debugLog, $"SKIPPED: No arguments provided\n"); } catch { }
+            try { System.IO.File.AppendAllText(debugLog, $"SKIPPED: No arguments provided\n"); } catch { }
         }
 
         // Now hide the console window
