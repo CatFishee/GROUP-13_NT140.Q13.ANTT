@@ -1,5 +1,5 @@
 # 🔴 Advanced Malware Research Project
-## NT140.Q13.ANTT - Group 13
+## NT140.Q13.ANTT - Group 12
 
 > **⚠️ EDUCATIONAL PURPOSE ONLY**  
 > This project is developed for academic research and cybersecurity education as part of the NT140 Network Security course. **NEVER deploy this software on systems you do not own or have explicit permission to test.**
@@ -779,7 +779,7 @@ Action: Launch Wiper.exe → Destroy evidence
 
 ## 👥 Contributors
 
-**Group 13 - NT140.Q13.ANTT**  
+**Group 12 - NT140.Q13.ANTT**  
 Course: Network Security (NT140)  
 Institution: University of Information Technology (UIT)  
 Academic Year: 2025-2026
@@ -789,7 +789,7 @@ Academic Year: 2025-2026
 ## 📞 Contact
 
 For academic inquiries only:
-- GitHub: [CatFishee/GROUP-13_NT140.Q13.ANTT](https://github.com/CatFishee/GROUP-13_NT140.Q13.ANTT)
+- GitHub: [CatFishee/GROUP-12_NT140.Q13.ANTT](https://github.com/CatFishee/GROUP-12_NT140.Q13.ANTT)
 - Course: NT140.Q13.ANTT
 - Gmail: thienphubui2803@gmail.com, giangcam2005@gmail.com
 
