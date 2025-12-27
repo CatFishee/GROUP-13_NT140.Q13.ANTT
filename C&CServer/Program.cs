@@ -1,7 +1,4 @@
-﻿// ===================================
-// === C&C SERVER (ATTACKER'S VM) ===
-// ===================================
-
+﻿
 var builder = WebApplication.CreateBuilder(args);
 
 // --- ADDED: Force the application to use its own directory as the base path ---
